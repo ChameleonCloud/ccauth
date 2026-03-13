@@ -6,6 +6,7 @@ This module holds argument parsing and the `main()` function so that
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,8 @@ from .auth import (
     write_clouds_yaml,
     _get_app_cred_id_and_secret,
 )
+
+logger = logging.getLogger(__name__)
 
 # Cache default config to avoid redundant metadata fetches
 _default_config = AuthConfig()
@@ -92,6 +95,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite existing openrc file",
     )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
 
     return p
 
@@ -101,6 +109,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s: %(message)s" if args.debug else "%(message)s",
+        stream=sys.stderr,
+    )
 
     config = AuthConfig(
         auth_url=args.auth_url,
@@ -120,18 +135,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not getattr(config, '_vendordata_available', True):
         if config.region_name == _default_config.region_name and config.auth_url == _default_config.auth_url:
-            print(
-                "WARNING: Could not reach metadata service. Using dev environment defaults. "
+            logger.warning(
+                "Could not reach metadata service. Using dev environment defaults. "
                 "For production, provide explicit values for: "
-                "--auth-url, --region-name, --project-id, --client-id, --keycloak-url",
-                file=sys.stderr,
+                "--auth-url, --region-name, --project-id, --client-id, --keycloak-url"
             )
 
     app_cred = ensure_app_cred(config, force_refresh=args.force_refresh)
 
     app_cred_id, _ = _get_app_cred_id_and_secret(app_cred)
-    print(f"Application credential name: {app_cred.get('name')}")
-    print(f"Application credential ID: {app_cred_id}")
+    cred_name = app_cred.get('name')
+    expires_at = app_cred.get("expires_at")
+
+    logger.info("Application credential: %s", cred_name)
+    logger.info("Credential ID: %s", app_cred_id)
+    if expires_at:
+        logger.info("Expires at: %s", expires_at)
+        logger.info("To delete this credential, run: openstack application credential delete %s", app_cred_id)
 
     if args.output_openrc:
         if write_openrc_file(
@@ -141,7 +161,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             auth_url=config.auth_url,
             force=args.force_openrc,
         ):
-            print(f"openrc written to {args.output_openrc}")
+            logger.info("Written openrc to %s", args.output_openrc)
 
     if args.output_clouds_yaml:
         if write_clouds_yaml(
@@ -152,16 +172,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             auth_url=config.auth_url,
             force=args.force_clouds_yaml,
         ):
-            print(f"clouds.yaml updated at {args.output_clouds_yaml}")
-
-    expires_at = app_cred.get("expires_at")
-    if expires_at:
-        print(f"Credential expires at: {expires_at}")
+            logger.info("Updated clouds.yaml at %s", args.output_clouds_yaml)
 
     if not args.output_openrc and not args.output_clouds_yaml:
-        print()
-        print("To use these credentials, generate a configuration file in your preferred format:")
-        print("  cc-login --output-openrc ~/openrc")
-        print("  cc-login --output-clouds-yaml ~/clouds.yaml")
+        logger.info("No output files requested. To use these credentials, generate a configuration file:")
+        logger.info("  cc-login --output-openrc ~/openrc")
+        logger.info("  cc-login --output-clouds-yaml ~/clouds.yaml")
+
+    logger.info("Credential will expire, please consider deleting %s (%s) once it does.", cred_name, app_cred_id)
 
     return 0

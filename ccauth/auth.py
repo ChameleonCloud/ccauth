@@ -6,9 +6,9 @@ create application credentials, cache them locally, and write configuration file
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -22,6 +22,9 @@ from keystoneauth1.identity.v3.oidc import OidcDeviceAuthorization
 from keystoneauth1.session import Session
 from keystoneauth1 import exceptions as ks_exceptions
 
+logger = logging.getLogger(__name__)
+
+
 def _fetch_vendordata(metadata_url: str) -> Optional[Dict[str, Any]]:
     """Fetch OpenStack vendordata from metadata service.
 
@@ -32,6 +35,7 @@ def _fetch_vendordata(metadata_url: str) -> Optional[Dict[str, Any]]:
             data = json.loads(response.read().decode("utf-8"))
             return data
     except (OSError, TimeoutError, json.JSONDecodeError, ValueError):
+        logger.debug("Could not fetch or parse vendordata from %s", metadata_url)
         return None
 
 
@@ -71,6 +75,11 @@ class AuthConfig:  # pylint: disable=too-many-instance-attributes
                     self.auth_url = chameleon_vd["auth_url"]
                 if not self.project_id and "project_id" in chameleon_vd:
                     self.project_id = chameleon_vd["project_id"]
+        else:
+            logger.warning(
+                "Could not fetch metadata from vendordata. Using defaults for dev environment. "
+                "Override with CLI args: --auth-url, --region-name, --project-id, --client-id, --keycloak-url"
+            )
 
         if self.client_id is None:
             self.client_id = (
@@ -134,14 +143,17 @@ def _read_app_cred_cache(path: Path, ttl_seconds: int) -> Optional[Dict[str, Any
     app_cred = data.get("app_cred")
 
     if time.time() - created_at > ttl_seconds:
+        logger.debug("Cached credential expired after %ss", ttl_seconds)
         return None
 
     if app_cred and "expires_at" in app_cred:
         expires_at_str = app_cred["expires_at"]
         expires_at_dt = _parse_dt(expires_at_str)
         if expires_at_dt <= _now_utc():
+            logger.debug("Cached credential has expired")
             return None
 
+    logger.debug("Using cached credential from %s", path)
     return app_cred
 
 
@@ -155,10 +167,10 @@ def _backup_file(path: Path) -> None:
     backup_path = path.with_stem(path.stem + f".bak.{timestamp}")
     try:
         os.replace(path, backup_path)
-        print(
-            f"WARNING: Found existing file at {path}. "
-            f"Backed up to {backup_path} and creating file.",
-            file=sys.stderr,
+        logger.warning(
+            "Found existing file at %s. Backed up to %s. Creating file.",
+            path,
+            backup_path,
         )
     except OSError as e:
         raise RuntimeError(
@@ -184,6 +196,7 @@ def _write_app_cred_cache(path: Path, app_cred: Dict[str, Any]) -> None:
         json.dump(data, f, indent=2, sort_keys=True)
     os.replace(tmp_path, path)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    logger.debug("Cached credential to %s", path)
 
 
 def _build_device_flow_session(config: AuthConfig) -> Session:
@@ -280,24 +293,23 @@ def ensure_app_cred(config: AuthConfig, force_refresh: bool = False) -> Dict[str
     if not force_refresh:
         cached = _read_app_cred_cache(cache_path, config.ttl_seconds)
         if cached is not None:
+            logger.debug("Credential cache valid, skipping refresh")
             return cached
 
+    logger.debug("Creating new application credential")
     try:
         conn = _create_openstack_connection(config)
         app_cred = _create_new_app_cred(conn, config)
     except ks_exceptions.InternalServerError as e:
         # Transient server error during authentication or credential creation
-        print(
-            f"ERROR: OpenStack server error during device flow auth (HTTP 500): {e}",
-            file=sys.stderr,
-        )
-        print("Please retry the command. If it continues to fail, please contact support.", file=sys.stderr)
+        logger.error("OpenStack server error during device flow auth (HTTP 500): %s", e)
+        logger.error("Please retry the command. If it continues to fail, please contact support.")
         raise
     except Exception as e:
         # If credential creation fails, try to use cache as fallback, else re-raise
         cached = _read_app_cred_cache(cache_path, config.ttl_seconds)
         if cached is not None:
-            print(f"WARNING: credential refresh failed ({e}); using cached credential", file=sys.stderr)
+            logger.warning("Credential refresh failed (%s); using cached credential", e)
             return cached
         raise
 
@@ -327,10 +339,10 @@ def _check_config(auth_url: Optional[str], region_name: Optional[str]) -> None:
         missing.append("region_name")
 
     if missing:
-        print(
-            f"WARNING: missing config values: {', '.join(missing)}. "
-            f"You may need to add these manually to the generated files.",
-            file=sys.stderr,
+        logger.warning(
+            "Missing config values: %s. "
+            "You may need to add these manually to the generated files.",
+            ", ".join(missing),
         )
 
 
@@ -362,8 +374,8 @@ def write_openrc_file(
     _check_config(auth_url, region_name)
 
     if output_path.exists() and not force:
-        print(f"WARNING: openrc file already exists at {output_path}", file=sys.stderr)
-        print("Use --force-openrc to overwrite.", file=sys.stderr)
+        logger.info("openrc file already exists at %s", output_path)
+        logger.info("Use --force-openrc to overwrite.")
         return False
 
     if output_path.exists() and force:
@@ -393,9 +405,10 @@ def write_openrc_file(
         f.write(content)
     os.replace(tmp_path, output_path)
     os.chmod(output_path, stat.S_IRUSR | stat.S_IWUSR)
+    logger.debug("Wrote openrc to %s", output_path)
 
     if force:
-        print(f"Overwrote openrc file at {output_path} (force mode)", file=sys.stderr)
+        logger.info("Overwrote openrc file at %s", output_path)
     return True
 
 def write_clouds_yaml(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -436,8 +449,8 @@ def write_clouds_yaml(  # pylint: disable=too-many-arguments,too-many-positional
         data["clouds"] = {}
 
     if cloud_name in data["clouds"] and not force:
-        print(f"WARNING: cloud '{cloud_name}' already exists in {output_path}", file=sys.stderr)
-        print("Use --force-clouds-yaml to overwrite.", file=sys.stderr)
+        logger.info("cloud '%s' already exists in %s", cloud_name, output_path)
+        logger.info("Use --force-clouds-yaml to overwrite.")
         return False
 
     cloud: Dict[str, Any] = {
@@ -459,9 +472,10 @@ def write_clouds_yaml(  # pylint: disable=too-many-arguments,too-many-positional
         yaml.safe_dump(data, f, default_flow_style=False)
     os.replace(tmp_path, output_path)
     os.chmod(output_path, stat.S_IRUSR | stat.S_IWUSR)
+    logger.debug("Wrote clouds.yaml to %s", output_path)
 
     _check_config(auth_url, region_name)
 
-    if force and cloud_name in data["clouds"]:
-        print(f"Updated cloud '{cloud_name}' in {output_path} (force overwrote existing)", file=sys.stderr)
+    if force:
+        logger.info("Updated cloud '%s' in %s", cloud_name, output_path)
     return True
