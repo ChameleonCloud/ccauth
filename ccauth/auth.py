@@ -54,8 +54,10 @@ class AuthConfig:  # pylint: disable=too-many-instance-attributes
     region_name: str = "CHI_DEV_UC"
     metadata_url: str = "http://169.254.169.254/openstack/latest/vendor_data2.json"
 
-    app_cred_name: str = "chameleon-app-cred"
+    app_cred_name: str = "chi-device-flow-auth"
     app_cred_expires_in_hours: int = 24
+
+    lease_id: Optional[str] = None
 
     app_cred_cache_path: Path = Path("~/.cache/ccauth/chameleon-app-cred.json").expanduser()
     ttl_seconds: int = 24 * 60 * 60
@@ -75,6 +77,8 @@ class AuthConfig:  # pylint: disable=too-many-instance-attributes
                     self.auth_url = chameleon_vd["auth_url"]
                 if not self.project_id and "project_id" in chameleon_vd:
                     self.project_id = chameleon_vd["project_id"]
+                if not self.lease_id and "lease_id" in chameleon_vd:
+                    self.lease_id = chameleon_vd["lease_id"]
         else:
             logger.warning(
                 "Could not fetch metadata from vendordata. Using defaults for dev environment. "
@@ -241,7 +245,7 @@ def _get_current_user_id(conn: openstack.connection.Connection) -> str:
 
 
 def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConfig) -> Dict[str, Any]:
-    """Create a new application credential with expiry and a unique timestamped name.
+    """Create a new application credential with expiry and the lease id and timestamp in the name.
 
     Returns the full credential dict including the secret.
     """
@@ -249,7 +253,10 @@ def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConf
     user_id = _get_current_user_id(conn)
 
     ts = _now_utc().strftime("%Y%m%d%H%M%S")
-    unique_name = f"{config.app_cred_name}-{ts}"
+    if config.lease_id:
+        unique_name = f"{config.app_cred_name}-{config.lease_id}_{ts}"
+    else:
+        unique_name = f"{config.app_cred_name}-{ts}"
 
     expires_at = None
     if config.app_cred_expires_in_hours > 0:

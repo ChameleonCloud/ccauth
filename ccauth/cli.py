@@ -151,7 +151,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     logger.info("Credential ID: %s", app_cred_id)
     if expires_at:
         logger.info("Expires at: %s", expires_at)
-        logger.info("To delete this credential, run: openstack application credential delete %s", app_cred_id)
 
     if args.output_openrc:
         if write_openrc_file(
