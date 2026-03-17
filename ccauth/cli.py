@@ -56,6 +56,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     p.add_argument(
+        "--scope",
+        default=_default_config.scope,
+        help="OpenID scope for device flow auth (default: openid)",
+    )
+
+    p.add_argument(
         "--app-cred-cache-path",
         default=str(_default_config.app_cred_cache_path),
         help="Path to cached app credential JSON (default ~/.cache/ccauth/chameleon-app-cred.json)",
@@ -129,6 +135,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         metadata_url=args.metadata_url,
         app_cred_name=args.app_cred_name,
         app_cred_expires_in_hours=args.app_cred_expires_hours,
+        scope=args.scope,
         app_cred_cache_path=Path(args.app_cred_cache_path).expanduser(),
         ttl_seconds=args.ttl_seconds,
     )
@@ -177,7 +184,5 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("No output files requested. To use these credentials, generate a configuration file:")
         logger.info("  cc-login --output-openrc ~/openrc")
         logger.info("  cc-login --output-clouds-yaml ~/clouds.yaml")
-
-    logger.info("Credential will expire, please consider deleting %s (%s) once it does.", cred_name, app_cred_id)
 
     return 0

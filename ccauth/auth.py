@@ -59,6 +59,8 @@ class AuthConfig:  # pylint: disable=too-many-instance-attributes
 
     lease_id: Optional[str] = None
 
+    scope: str = "openid"
+
     app_cred_cache_path: Path = Path("~/.cache/ccauth/chameleon-app-cred.json").expanduser()
     ttl_seconds: int = 24 * 60 * 60
 
@@ -194,6 +196,7 @@ def _write_app_cred_cache(path: Path, app_cred: Dict[str, Any]) -> None:
     data = {
         "created_at": time.time(),
         "app_cred": app_cred,
+        "app_cred_name": app_cred.get("name"),
     }
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w") as f:
@@ -216,7 +219,7 @@ def _build_device_flow_session(config: AuthConfig) -> Session:
         protocol=config.protocol,
         client_id=config.client_id,
         discovery_endpoint=discovery_endpoint,
-        scope="openid",
+        scope=config.scope,
         project_id=config.project_id,
     )
 
@@ -244,19 +247,66 @@ def _get_current_user_id(conn: openstack.connection.Connection) -> str:
     return user_id
 
 
-def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConfig) -> Dict[str, Any]:
-    """Create a new application credential with expiry and the lease id and timestamp in the name.
+def _get_cached_app_cred_name(path: Path) -> Optional[str]:
+    """Load the cached app credential name from cache file.
 
+    Returns the name if present, None otherwise.
+    """
+    path = path.expanduser()
+    if not path.exists():
+        return None
+
+    try:
+        with path.open("r") as f:
+            data = json.load(f)
+        return data.get("app_cred_name")
+    except (IOError, json.JSONDecodeError):
+        return None
+
+
+def _delete_app_cred(conn: openstack.connection.Connection, user_id: str, cred_name: str) -> bool:
+    """Delete an app credential by name.
+
+    Returns True if deleted successfully and verified gone, False otherwise.
+    """
+    try:
+        identity = conn.identity
+        creds = identity.application_credentials(user=user_id)
+        for cred in creds:
+            if cred.name == cred_name:
+                identity.delete_application_credential(user_id, cred.id)
+                logger.debug("Deleted old app credential: %s", cred_name)
+
+                # Verify it's actually gone
+                creds_after = identity.application_credentials(user=user_id)
+                for cred_after in creds_after:
+                    if cred_after.name == cred_name:
+                        logger.debug("Deletion verification failed: credential still exists: %s", cred_name)
+                        return False
+
+                return True
+    except Exception as e:
+        logger.debug("Could not delete old app credential '%s': %s", cred_name, e)
+        return False
+    return False
+
+
+def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConfig, name: Optional[str] = None) -> Dict[str, Any]:
+    """Create a new application credential with expiry.
+
+    If name is provided, uses that (for reusing deleted credential names).
+    Otherwise generates a name from lease_id and timestamp.
     Returns the full credential dict including the secret.
     """
     identity = conn.identity
     user_id = _get_current_user_id(conn)
 
-    ts = _now_utc().strftime("%Y%m%d%H%M%S")
-    if config.lease_id:
-        unique_name = f"{config.app_cred_name}-{config.lease_id}_{ts}"
-    else:
-        unique_name = f"{config.app_cred_name}-{ts}"
+    if name is None:
+        ts = _now_utc().strftime("%Y%m%d%H%M%S")
+        if config.lease_id:
+            name = f"{config.app_cred_name}-{config.lease_id}_{ts}"
+        else:
+            name = f"{config.app_cred_name}-{ts}"
 
     expires_at = None
     if config.app_cred_expires_in_hours > 0:
@@ -264,13 +314,27 @@ def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConf
         expires_at = exp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params: Dict[str, Any] = {
-        "name": unique_name,
-        "unrestricted": False,
+        "name": name,
+        "unrestricted": True,
     }
     if expires_at:
         params["expires_at"] = expires_at
 
-    app_cred = identity.create_application_credential(user=user_id, **params)
+    try:
+        app_cred = identity.create_application_credential(user_id, **params)
+    except Exception as e:
+        # If creation with reused name fails (e.g., conflict), generate a new name and retry
+        if name is not None and "conflict" in str(e).lower():
+            logger.warning("Credential name '%s' conflicts; generating new name: %s", name, e)
+            ts = _now_utc().strftime("%Y%m%d%H%M%S")
+            if config.lease_id:
+                name = f"{config.app_cred_name}-{config.lease_id}_{ts}"
+            else:
+                name = f"{config.app_cred_name}-{ts}"
+            params["name"] = name
+            app_cred = identity.create_application_credential(user_id, **params)
+        else:
+            raise
 
     if hasattr(app_cred, "to_dict"):
         app_cred_dict = app_cred.to_dict()
@@ -278,7 +342,7 @@ def _create_new_app_cred(conn: openstack.connection.Connection, config: AuthConf
         app_cred_dict = dict(app_cred)
 
     app_cred_dict.setdefault("user_id", user_id)
-    app_cred_dict.setdefault("name", unique_name)
+    app_cred_dict.setdefault("name", name)
     if expires_at and "expires_at" not in app_cred_dict:
         app_cred_dict["expires_at"] = expires_at
 
@@ -292,8 +356,8 @@ def ensure_app_cred(config: AuthConfig, force_refresh: bool = False) -> Dict[str
     credential. Subsequent calls within TTL return the cached credential.
     Pass force_refresh=True to bypass cache and create a new credential.
 
-    If a cached credential is used but the OpenStack call fails (e.g., due to expiry),
-    regenerates automatically.
+    When creating a new credential, attempts to reuse the cached credential name
+    by deleting the old one. If deletion fails, generates a new name instead.
     """
     cache_path = config.app_cred_cache_path
 
@@ -306,7 +370,18 @@ def ensure_app_cred(config: AuthConfig, force_refresh: bool = False) -> Dict[str
     logger.debug("Creating new application credential")
     try:
         conn = _create_openstack_connection(config)
-        app_cred = _create_new_app_cred(conn, config)
+        user_id = _get_current_user_id(conn)
+
+        old_name = _get_cached_app_cred_name(cache_path)
+        name_to_use = None
+        if old_name:
+            if _delete_app_cred(conn, user_id, old_name):
+                name_to_use = old_name
+                logger.debug("Reusing old app credential name: %s", old_name)
+            else:
+                logger.info("Could not delete old credential '%s'; will create with new name", old_name)
+
+        app_cred = _create_new_app_cred(conn, config, name=name_to_use)
     except ks_exceptions.InternalServerError as e:
         # Transient server error during authentication or credential creation
         logger.error("OpenStack server error during device flow auth (HTTP 500): %s", e)
