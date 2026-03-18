@@ -1,188 +1,215 @@
-"""CLI entrypoint for the `ccauth` package.
+"""CLI entrypoint for ccauth.
 
-This module holds argument parsing and the `main()` function so that
-`ccauth.auth` remains a library of pure functions.
+Subcommands:
+  login       — Authenticate via OIDC device flow
+  logout      — Clear cached refresh tokens
+  clouds-yaml — Write a clouds.yaml file
+  openrc      — Write an openrc file
 """
+
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
-from .auth import (
-    AuthConfig,
-    ensure_app_cred,
-    write_openrc_file,
-    write_clouds_yaml,
-    _get_app_cred_id_and_secret,
+from keystoneauth1.session import Session
+
+from . import __version__
+from .config import SiteConfig
+from .discover import (
+    DEFAULT_CLIENT_ID,
+    DEFAULT_DISCOVERY_ENDPOINT,
+    SITES_API_URL,
+    VENDORDATA_URL,
+    from_reference_api,
+    from_vendordata,
 )
+from .plugin import ChameleonDeviceAuth, clear_cache
+from .writers import write_clouds_yaml, write_openrc_file
 
 logger = logging.getLogger(__name__)
 
-# Cache default config to avoid redundant metadata fetches
-_default_config = AuthConfig()
+
+def _build_sites(args) -> list[SiteConfig] | None:
+    """Build site list from CLI args, reference API, or vendordata."""
+    if args.auth_url:
+        return [
+            SiteConfig(
+                auth_url=args.auth_url,
+                region_name=args.region_name or "",
+                project_id=args.project_id or "",
+                identity_provider=args.identity_provider,
+                protocol=args.protocol,
+                cloud_name=args.cloud_name,
+                client_id=args.client_id,
+                discovery_endpoint=args.discovery_endpoint,
+            )
+        ]
+
+    # Try reference API first, then vendordata
+    sites = from_reference_api(
+        api_url=args.sites_api_url,
+        client_id=args.client_id,
+        discovery_endpoint=args.discovery_endpoint,
+        project_id=args.project_id or "",
+    )
+    if sites:
+        return sites
+
+    logger.debug("Reference API unavailable, trying vendordata")
+    sites = from_vendordata(
+        metadata_url=args.metadata_url,
+        client_id=args.client_id,
+        discovery_endpoint=args.discovery_endpoint,
+    )
+    if sites:
+        return sites
+
+    logger.error(
+        "No site config found. Provide --auth-url or ensure the "
+        "reference API or vendordata is accessible."
+    )
+    return None
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser for cc-login CLI."""
-    p = argparse.ArgumentParser(
-        prog="cc-login-dev",
-        description="Device auth + app cred caching + openrc/clouds.yaml generation.",
+def _trigger_auth(site: SiteConfig) -> None:
+    plugin = ChameleonDeviceAuth(
+        auth_url=site.auth_url,
+        identity_provider=site.identity_provider,
+        protocol=site.protocol,
+        client_id=site.client_id,
+        discovery_endpoint=site.discovery_endpoint,
+        scope="openid",
+        project_id=site.project_id,
     )
+    sess = Session(auth=plugin)
+    sess.get_token()
 
-    p.add_argument("--auth-url", default=_default_config.auth_url, help="Keystone auth URL")
-    p.add_argument("--identity-provider", default=_default_config.identity_provider)
-    p.add_argument("--protocol", default=_default_config.protocol)
-    p.add_argument("--client-id", default=None, help="Keycloak device token client ID")
-    p.add_argument("--keycloak-url", default=None, help="Keycloak URL")
-    p.add_argument("--keycloak-realm", default=_default_config.keycloak_realm)
 
-    p.add_argument("--project-id", default="", help="OpenStack project ID from vendordata or manual entry")
-    p.add_argument("--region-name", default=_default_config.region_name)
-    p.add_argument(
-        "--metadata-url",
-        default="http://169.254.169.254/openstack/latest/vendor_data2.json",
-        help="Metadata service URL for vendordata (default: http://169.254.169.254/openstack/latest/vendor_data2.json)",
-    )
+def _cmd_login(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    try:
+        _trigger_auth(sites[0])
+    except KeyboardInterrupt:
+        logger.error("\nAuthentication cancelled.")
+        return 1
+    except Exception as e:
+        logger.error("Authentication failed: %s", e)
+        logger.debug("Details:", exc_info=True)
+        return 1
+    return 0
 
-    p.add_argument("--app-cred-name", default=_default_config.app_cred_name)
-    p.add_argument(
-        "--app-cred-expires-hours",
-        type=int,
-        default=_default_config.app_cred_expires_in_hours,
-        help="App credential expiry in hours (default 24)",
-    )
 
-    p.add_argument(
-        "--scope",
-        default=_default_config.scope,
-        help="OpenID scope for device flow auth (default: openid)",
-    )
+def _cmd_logout(args) -> int:
+    if clear_cache():
+        logger.info("Cleared cached refresh token.")
+    else:
+        logger.info("No cached token found.")
+    return 0
 
-    p.add_argument(
-        "--app-cred-cache-path",
-        default=str(_default_config.app_cred_cache_path),
-        help="Path to cached app credential JSON (default ~/.cache/ccauth/chameleon-app-cred.json)",
-    )
-    p.add_argument(
-        "--ttl-seconds",
-        type=int,
-        default=_default_config.ttl_seconds,
-        help="Local cache TTL in seconds (default 24h)",
-    )
-    p.add_argument(
-        "--force-refresh",
-        action="store_true",
-        help="Ignore cache and force new device auth + new app cred",
-    )
 
-    p.add_argument(
-        "--output-openrc",
-        help="Write openrc-style file for this app credential",
+def _cmd_clouds_yaml(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    if write_clouds_yaml(sites, Path(args.output), force=args.force):
+        logger.info("Wrote clouds.yaml to %s", args.output)
+    return 0
+
+
+def _cmd_openrc(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    if write_openrc_file(sites[0], Path(args.output), force=args.force):
+        logger.info("Wrote openrc to %s", args.output)
+    return 0
+
+
+def _add_site_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--auth-url", help="Keystone auth URL (skips discovery)")
+    parser.add_argument("--region-name", help="OpenStack region name")
+    parser.add_argument("--project-id", help="OpenStack project ID")
+    parser.add_argument("--identity-provider", default="chameleon")
+    parser.add_argument("--protocol", default="openid")
+    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
+    parser.add_argument(
+        "--discovery-endpoint",
+        default=DEFAULT_DISCOVERY_ENDPOINT,
+        help="Keycloak OIDC discovery URL (default: %(default)s)",
     )
-    p.add_argument(
-        "--output-clouds-yaml",
-        help="Write clouds.yaml with this app credential",
-    )
-    p.add_argument(
+    parser.add_argument(
         "--cloud-name",
         default="chameleon",
-        help="Cloud name for clouds.yaml (default: chameleon)",
+        help="Cloud name in clouds.yaml (default: chameleon)",
     )
-    p.add_argument(
-        "--force-clouds-yaml",
+    parser.add_argument(
+        "--sites-api-url",
+        default=SITES_API_URL,
+        help="Chameleon reference API URL (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--metadata-url",
+        default=VENDORDATA_URL,
+        help="Metadata service URL for vendordata (default: %(default)s)",
+    )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ccauth",
+        description="Chameleon OIDC device flow authentication.",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    login_p = sub.add_parser("login", help="Authenticate via OIDC device flow")
+    _add_site_args(login_p)
+
+    sub.add_parser("logout", help="Clear cached refresh tokens")
+
+    clouds_p = sub.add_parser("clouds-yaml", help="Write a clouds.yaml file")
+    _add_site_args(clouds_p)
+    clouds_p.add_argument("--output", required=True, help="Output file path")
+    clouds_p.add_argument(
+        "--force",
         action="store_true",
-        help="Overwrite existing cloud entry in clouds.yaml",
+        help="Overwrite existing entries",
     )
-    p.add_argument(
-        "--force-openrc",
+
+    openrc_p = sub.add_parser("openrc", help="Write an openrc file")
+    _add_site_args(openrc_p)
+    openrc_p.add_argument("--output", required=True, help="Output file path")
+    openrc_p.add_argument(
+        "--force",
         action="store_true",
-        help="Overwrite existing openrc file",
-    )
-    p.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
+        help="Overwrite existing entries",
     )
 
-    return p
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    """Main entrypoint: parse args, perform auth, and write output files."""
-
-    parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
-        level=log_level,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="%(levelname)s: %(message)s" if args.debug else "%(message)s",
         stream=sys.stderr,
     )
 
-    config = AuthConfig(
-        auth_url=args.auth_url,
-        identity_provider=args.identity_provider,
-        protocol=args.protocol,
-        client_id=args.client_id,
-        keycloak_url=args.keycloak_url,
-        keycloak_realm=args.keycloak_realm,
-        project_id=args.project_id,
-        region_name=args.region_name,
-        metadata_url=args.metadata_url,
-        app_cred_name=args.app_cred_name,
-        app_cred_expires_in_hours=args.app_cred_expires_hours,
-        scope=args.scope,
-        app_cred_cache_path=Path(args.app_cred_cache_path).expanduser(),
-        ttl_seconds=args.ttl_seconds,
-    )
+    if not args.command:
+        parser.print_help()
+        return 1
 
-    if not getattr(config, '_vendordata_available', True):
-        if config.region_name == _default_config.region_name and config.auth_url == _default_config.auth_url:
-            logger.warning(
-                "Could not reach metadata service. Using dev environment defaults. "
-                "For production, provide explicit values for: "
-                "--auth-url, --region-name, --project-id, --client-id, --keycloak-url"
-            )
-
-    app_cred = ensure_app_cred(config, force_refresh=args.force_refresh)
-
-    app_cred_id, _ = _get_app_cred_id_and_secret(app_cred)
-    cred_name = app_cred.get('name')
-    expires_at = app_cred.get("expires_at")
-
-    logger.info("Application credential: %s", cred_name)
-    logger.info("Credential ID: %s", app_cred_id)
-    if expires_at:
-        logger.info("Expires at: %s", expires_at)
-
-    if args.output_openrc:
-        if write_openrc_file(
-            app_cred=app_cred,
-            output_path=args.output_openrc,
-            region_name=config.region_name,
-            auth_url=config.auth_url,
-            force=args.force_openrc,
-        ):
-            logger.info("Written openrc to %s", args.output_openrc)
-
-    if args.output_clouds_yaml:
-        if write_clouds_yaml(
-            app_cred=app_cred,
-            output_path=args.output_clouds_yaml,
-            cloud_name=args.cloud_name,
-            region_name=config.region_name,
-            auth_url=config.auth_url,
-            force=args.force_clouds_yaml,
-        ):
-            logger.info("Updated clouds.yaml at %s", args.output_clouds_yaml)
-
-    if not args.output_openrc and not args.output_clouds_yaml:
-        logger.info("No output files requested. To use these credentials, generate a configuration file:")
-        logger.info("  cc-login --output-openrc ~/openrc")
-        logger.info("  cc-login --output-clouds-yaml ~/clouds.yaml")
-
-    return 0
+    commands = {
+        "login": _cmd_login,
+        "logout": _cmd_logout,
+        "clouds-yaml": _cmd_clouds_yaml,
+        "openrc": _cmd_openrc,
+    }
+    return commands[args.command](args)

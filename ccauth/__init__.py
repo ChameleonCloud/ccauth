@@ -1,19 +1,3 @@
-"""Library interface for device-flow auth and app credential caching.
+"""ccauth — OIDC device flow auth plugin for OpenStack on Chameleon."""
 
-Exports the main public API: AuthConfig, ensure_app_cred, write_openrc_file, write_clouds_yaml.
-"""
-from .auth import (
-	AuthConfig,
-	ensure_app_cred,
-	write_openrc_file,
-	write_clouds_yaml,
-)
-
-__all__ = [
-	"AuthConfig",
-	"ensure_app_cred",
-	"write_openrc_file",
-	"write_clouds_yaml",
-]
-
-__version__ = "0.1.0"
+__version__ = "0.3.0"

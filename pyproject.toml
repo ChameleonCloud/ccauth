@@ -4,24 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ccauth"
-version = "0.1.0"
-description = "Device-flow auth helper and app-credential caching for OpenStack on Chameleon"
+version = "0.3.0"
+description = "OIDC device flow auth plugin for OpenStack on Chameleon"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
 
 dependencies = [
 	"PyYAML>=5.4",
-	"openstacksdk>=1.0.0",
-	"keystoneauth1>=4.5.0",
+	"keystoneauth1>=4.0.0",
 ]
-
-[project.optional-dependencies]
-test = ["pytest>=6.0"]
-lint = ["pylint>=2.0"]
 
 [tool.pylint.format]
 max-line-length = 120
 
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.15.6",
+]
+
 [project.scripts]
-cc-login = "ccauth.cli:main"
+ccauth = "ccauth.cli:main"
+
+[project.entry-points."keystoneauth1.plugin"]
+v3chameleonoidc = "ccauth.loader:ChameleonDeviceAuthLoader"

@@ -1,3 +1,8 @@
+# Generated secrets and files
+.cclogin
+clouds.yaml
+openrc
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
