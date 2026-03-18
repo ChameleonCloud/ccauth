@@ -1,8 +1,10 @@
 """CLI entrypoint for ccauth.
 
-Runs the OIDC device flow to cache a refresh token, then writes
-clouds.yaml / openrc files using the v3chameleonoidc auth type.
-On subsequent runs the refresh token is used silently.
+Subcommands:
+  login       — Authenticate via OIDC device flow
+  logout      — Clear cached refresh tokens
+  clouds-yaml — Write a clouds.yaml file
+  openrc      — Write an openrc file
 """
 from __future__ import annotations
 
@@ -10,14 +12,12 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 from keystoneauth1.session import Session
 
+from . import __version__
 from .auth import AuthConfig, SiteConfig, write_clouds_yaml, write_openrc_file
-from .plugin import ChameleonDeviceAuth
-
-logger = logging.getLogger(__name__)
+from .plugin import ChameleonDeviceAuth, REFRESH_TOKEN_CACHE
 
 DEFAULT_METADATA_URL = "http://169.254.169.254/openstack/latest/vendor_data2.json"
 DEFAULT_DISCOVERY_ENDPOINT = (
@@ -26,13 +26,39 @@ DEFAULT_DISCOVERY_ENDPOINT = (
 )
 DEFAULT_CLIENT_ID = "chi-cli-device-token"
 
+logger = logging.getLogger(__name__)
+
+
+def _build_sites(args) -> list[SiteConfig] | None:
+    """Build site list from CLI args or vendordata. Returns None on failure."""
+    if args.auth_url:
+        return [SiteConfig(
+            auth_url=args.auth_url,
+            region_name=args.region_name or "",
+            project_id=args.project_id or "",
+            identity_provider=args.identity_provider,
+            protocol=args.protocol,
+            cloud_name=args.cloud_name,
+            client_id=args.client_id,
+            discovery_endpoint=args.discovery_endpoint,
+        )]
+
+    logger.warning(
+        "No --auth-url provided; fetching site config from vendordata at %s",
+        args.metadata_url,
+    )
+    config = AuthConfig.from_vendordata(args.metadata_url)
+    if not config.sites:
+        logger.error(
+            "No site config found. Provide --auth-url or ensure "
+            "vendordata is accessible at %s",
+            args.metadata_url,
+        )
+        return None
+    return config.sites
+
 
 def _trigger_auth(site: SiteConfig) -> None:
-    """Run auth against a site to ensure the refresh token gets cached.
-
-    On first call this triggers the interactive device flow.
-    On subsequent calls the cached refresh token is used silently.
-    """
     plugin = ChameleonDeviceAuth(
         auth_url=site.auth_url,
         identity_provider=site.identity_provider,
@@ -46,56 +72,102 @@ def _trigger_auth(site: SiteConfig) -> None:
     sess.get_token()
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="cc-login",
-        description=(
-            "Authenticate to Chameleon via OIDC device flow and write "
-            "clouds.yaml / openrc files. On first run you will be prompted "
-            "to visit a URL. Subsequent runs refresh silently."
-        ),
-    )
+def _cmd_login(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    try:
+        _trigger_auth(sites[0])
+    except KeyboardInterrupt:
+        logger.error("\nAuthentication cancelled.")
+        return 1
+    except Exception as e:
+        logger.error("Authentication failed: %s", e)
+        logger.debug("Details:", exc_info=True)
+        return 1
+    return 0
 
-    p.add_argument(
-        "--metadata-url",
-        default=DEFAULT_METADATA_URL,
+
+def _cmd_logout(args) -> int:
+    path = REFRESH_TOKEN_CACHE.expanduser()
+    if path.exists():
+        path.unlink()
+        logger.info("Cleared cached refresh token.")
+    else:
+        logger.info("No cached token found.")
+    return 0
+
+
+def _cmd_clouds_yaml(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    if write_clouds_yaml(sites, Path(args.output), force=args.force):
+        logger.info("Wrote clouds.yaml to %s", args.output)
+    return 0
+
+
+def _cmd_openrc(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    if write_openrc_file(sites[0], Path(args.output), force=args.force):
+        logger.info("Wrote openrc to %s", args.output)
+    return 0
+
+
+def _add_site_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--metadata-url", default=DEFAULT_METADATA_URL,
         help="Metadata service URL for vendordata (default: %(default)s)",
     )
-
-    # Manual site config (overrides vendordata)
-    p.add_argument("--auth-url", help="Keystone auth URL")
-    p.add_argument("--region-name", help="OpenStack region name")
-    p.add_argument("--project-id", help="OpenStack project ID")
-    p.add_argument("--identity-provider", default="chameleon")
-    p.add_argument("--protocol", default="openid")
-    p.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
-    p.add_argument(
-        "--discovery-endpoint",
-        default=DEFAULT_DISCOVERY_ENDPOINT,
+    parser.add_argument("--auth-url", help="Keystone auth URL")
+    parser.add_argument("--region-name", help="OpenStack region name")
+    parser.add_argument("--project-id", help="OpenStack project ID")
+    parser.add_argument("--identity-provider", default="chameleon")
+    parser.add_argument("--protocol", default="openid")
+    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
+    parser.add_argument(
+        "--discovery-endpoint", default=DEFAULT_DISCOVERY_ENDPOINT,
         help="Keycloak OIDC discovery URL (default: %(default)s)",
     )
-    p.add_argument(
-        "--cloud-name",
-        default="chameleon",
+    parser.add_argument(
+        "--cloud-name", default="chameleon",
         help="Cloud name in clouds.yaml (default: chameleon)",
     )
 
-    # Output files
-    p.add_argument("--output-clouds-yaml", help="Write clouds.yaml to this path")
-    p.add_argument("--output-openrc", help="Write openrc to this path")
-    p.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite existing cloud entries / openrc files",
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ccauth",
+        description="Chameleon OIDC device flow authentication.",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
 
-    p.add_argument("--debug", action="store_true", help="Enable debug logging")
+    sub = parser.add_subparsers(dest="command")
 
-    return p
+    login_p = sub.add_parser("login", help="Authenticate via OIDC device flow")
+    _add_site_args(login_p)
 
+    sub.add_parser("logout", help="Clear cached refresh tokens")
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = build_arg_parser()
+    clouds_p = sub.add_parser("clouds-yaml", help="Write a clouds.yaml file")
+    _add_site_args(clouds_p)
+    clouds_p.add_argument("--output", required=True, help="Output file path")
+    clouds_p.add_argument(
+        "--force", action="store_true", help="Overwrite existing entries",
+    )
+
+    openrc_p = sub.add_parser("openrc", help="Write an openrc file")
+    _add_site_args(openrc_p)
+    openrc_p.add_argument("--output", required=True, help="Output file path")
+    openrc_p.add_argument(
+        "--force", action="store_true", help="Overwrite existing entries",
+    )
+
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -104,60 +176,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         stream=sys.stderr,
     )
 
-    # Build site config: CLI args override vendordata
-    if args.auth_url:
-        sites = [
-            SiteConfig(
-                auth_url=args.auth_url,
-                region_name=args.region_name or "",
-                project_id=args.project_id or "",
-                identity_provider=args.identity_provider,
-                protocol=args.protocol,
-                cloud_name=args.cloud_name,
-                client_id=args.client_id,
-                discovery_endpoint=args.discovery_endpoint,
-            )
-        ]
-    else:
-        logger.warning(
-            "No --auth-url provided; fetching site config from vendordata at %s",
-            args.metadata_url,
-        )
-        config = AuthConfig.from_vendordata(args.metadata_url)
-        sites = config.sites
-        if not sites:
-            logger.error(
-                "No site config found. Provide --auth-url or ensure "
-                "vendordata is accessible at %s",
-                args.metadata_url,
-            )
-            return 1
+    if not args.command:
+        parser.print_help()
+        return 1
 
-    # Trigger auth against the first site to seed the refresh token cache.
-    # (All sites share one Keycloak so one device flow covers all of them.)
-    _trigger_auth(sites[0])
-
-    if args.output_clouds_yaml:
-        if write_clouds_yaml(
-            sites=sites,
-            output_path=Path(args.output_clouds_yaml),
-            force=args.force,
-        ):
-            logger.info("Wrote clouds.yaml to %s", args.output_clouds_yaml)
-
-    if args.output_openrc:
-        if write_openrc_file(
-            site=sites[0],
-            output_path=Path(args.output_openrc),
-            force=args.force,
-        ):
-            logger.info("Wrote openrc to %s", args.output_openrc)
-
-    if not args.output_clouds_yaml and not args.output_openrc:
-        logger.info(
-            "Authentication cached. To generate config files:\n"
-            "  cc-login --output-clouds-yaml ~/.config/openstack/clouds.yaml\n"
-            "  cc-login --output-openrc ~/openrc"
-        )
-
-    return 0
+    commands = {
+        "login": _cmd_login,
+        "logout": _cmd_logout,
+        "clouds-yaml": _cmd_clouds_yaml,
+        "openrc": _cmd_openrc,
+    }
+    return commands[args.command](args)
