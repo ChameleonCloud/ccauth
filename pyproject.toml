@@ -13,7 +13,7 @@ license = {text = "Apache-2.0"}
 dependencies = [
 	"PyYAML>=5.4",
 	"openstacksdk>=1.0.0",
-	"keystoneauth1>=4.0.0",
+	"keystoneauth1>=4.5.0",
 ]
 
 [project.optional-dependencies]
