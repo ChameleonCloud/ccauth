@@ -1,19 +1,13 @@
-"""Library interface for device-flow auth and app credential caching.
-
-Exports the main public API: AuthConfig, ensure_app_cred, write_openrc_file, write_clouds_yaml.
-"""
-from .auth import (
-	AuthConfig,
-	ensure_app_cred,
-	write_openrc_file,
-	write_clouds_yaml,
-)
+"""ccauth — Chameleon OIDC device flow plugin for keystoneauth1."""
+from .plugin import ChameleonDeviceAuth
+from .auth import AuthConfig, SiteConfig, write_clouds_yaml, write_openrc_file
 
 __all__ = [
-	"AuthConfig",
-	"ensure_app_cred",
-	"write_openrc_file",
-	"write_clouds_yaml",
+    "ChameleonDeviceAuth",
+    "AuthConfig",
+    "SiteConfig",
+    "write_clouds_yaml",
+    "write_openrc_file",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
