@@ -119,6 +119,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         ]
     else:
+        logger.warning(
+            "No --auth-url provided; fetching site config from vendordata at %s",
+            args.metadata_url,
+        )
         config = AuthConfig.from_vendordata(args.metadata_url)
         sites = config.sites
         if not sites:

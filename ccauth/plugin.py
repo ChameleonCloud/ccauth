@@ -19,7 +19,8 @@ from keystoneauth1 import session as ks_session
 
 LOG = logging.getLogger(__name__)
 
-REFRESH_TOKEN_CACHE = Path("~/.cache/ccauth/refresh_token.json")
+_STATE_DIR = Path(os.environ.get("CC_LOGIN_STATE", "~/.cache/ccauth"))
+REFRESH_TOKEN_CACHE = _STATE_DIR / "refresh_token.json"
 
 
 class ChameleonDeviceAuth(OidcDeviceAuthorization):
@@ -153,12 +154,13 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                     REFRESH_TOKEN_CACHE,
                     self._last_token_response.get("refresh_token", cached),
                 )
+            except Exception:
+                LOG.debug("Refresh token failed, falling back to device flow")
+            else:
                 resp = self._get_keystone_token(session, access_token)
                 auth_ref = access.create(resp=resp)
                 assert isinstance(auth_ref, access.AccessInfoV3)  # nosec B101
                 return auth_ref
-            except Exception:
-                LOG.debug("Refresh token failed, falling back to device flow")
 
         # Device flow — calls our _get_access_token which stashes _last_token_response
         auth_ref = super().get_unscoped_auth_ref(session)
