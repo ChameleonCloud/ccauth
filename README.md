@@ -1,70 +1,70 @@
 # ccauth
 
-OpenStack Chameleon device-flow authentication helper with refresh token caching.
+OIDC device flow auth plugin for OpenStack on Chameleon.
 
-Uses Keycloak OIDC device flow to obtain credentials and caches the refresh token locally.
-Provides both a CLI (`ccauth`) and a keystoneauth1 plugin (`v3chameleonoidc`).
+Caches refresh tokens locally so you authenticate once interactively,
+then all subsequent `openstack` commands work silently.
 
 ## Installation
 
 ```bash
-pip install -e .
+pip install .
 ```
 
-## Usage
-
-### Authenticate
+## Quick start
 
 ```bash
-ccauth login --auth-url https://chi.uc.chameleoncloud.org:5000/v3 --project-id <id>
+# Authenticate (discovers sites automatically from the Chameleon API)
+ccauth login
+
+# Or specify a site directly
+ccauth login --auth-url https://chi.uc.chameleoncloud.org:5000/v3
 ```
 
-On first run you will be prompted to visit a URL to complete device flow.
-Subsequent runs reuse the cached refresh token silently.
+On first run you'll be prompted to visit a URL. Subsequent runs reuse the
+cached refresh token silently.
 
-Without `--auth-url`, `ccauth login` tries to fetch site config from the OpenStack metadata
-service (only available on Chameleon instances).
-
-### Write output files
+## Generate config files
 
 ```bash
-# Generate clouds.yaml
-ccauth clouds-yaml --auth-url ... --output ~/.config/openstack/clouds.yaml
+# clouds.yaml (auto-discovers all Chameleon sites)
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
 
-# Generate openrc
-ccauth openrc --auth-url ... --output ~/openrc
+# clouds.yaml for a specific site
+ccauth clouds-yaml --auth-url https://chi.uc.chameleoncloud.org:5000/v3 \
+  --cloud-name chi_uc --output ~/.config/openstack/clouds.yaml
+
+# openrc (single site)
+ccauth openrc --auth-url https://chi.uc.chameleoncloud.org:5000/v3 \
+  --output ~/openrc
 
 # Overwrite existing entries
-ccauth clouds-yaml --auth-url ... --output ~/.config/openstack/clouds.yaml --force
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --force
 ```
 
-### Clear cached tokens
+## Clear cached tokens
 
 ```bash
 ccauth logout
 ```
 
-### Environment variables
+## Site discovery
 
-| Variable | Default | Description |
-|---|---|---|
-| `CC_LOGIN_STATE` | `~/.cache/ccauth` | Directory for cached refresh token |
+When `--auth-url` is not provided, ccauth automatically discovers sites:
 
-### Debug logging
+1. **Chameleon reference API** — queries `https://api.chameleoncloud.org/sites`
+2. **OpenStack vendordata** — falls back to the metadata service (only on Chameleon instances)
 
-```bash
-ccauth --debug login --auth-url ...
-```
+You can override these URLs with `--sites-api-url` and `--metadata-url`.
 
 ## clouds.yaml plugin
 
 The `v3chameleonoidc` auth type is registered as a keystoneauth1 plugin.
-Any openstack tool (openstack CLI, openstacksdk) picks it up automatically
-once `ccauth` is installed.
+Once `ccauth` is installed, any openstack tool picks it up automatically:
 
 ```yaml
 clouds:
-  chameleon:
+  uc:
     auth_type: v3chameleonoidc
     auth:
       auth_url: https://chi.uc.chameleoncloud.org:5000/v3
@@ -76,8 +76,23 @@ clouds:
     region_name: CHI@UC
 ```
 
-`ccauth login` pre-warms the token cache. Subsequent `openstack` invocations reuse
-the cached token without prompting.
+Run `ccauth login` to prime the cache, then use `openstack` normally:
+
+```bash
+openstack --os-cloud uc server list
+```
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `CC_LOGIN_STATE` | `~/.cache/ccauth` | Directory for cached refresh token |
+
+## Debug logging
+
+```bash
+ccauth --debug login
+```
 
 ## Development
 

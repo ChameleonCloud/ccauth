@@ -1,9 +1,8 @@
-"""Chameleon OIDC device flow plugin for keystoneauth1.
+"""OIDC device flow plugin for keystoneauth1 with refresh token caching.
 
-Subclasses OidcDeviceAuthorization to add refresh token caching.
+Subclasses OidcDeviceAuthorization to add local refresh token caching.
 On first use, runs the interactive device flow and caches the refresh token.
 On subsequent use, silently refreshes without user interaction.
-Registers as 'v3chameleonoidc' entry point so any openstack tool can use it.
 """
 import json
 import logging
@@ -24,7 +23,7 @@ REFRESH_TOKEN_CACHE = _STATE_DIR / "refresh_token.json"
 
 
 class ChameleonDeviceAuth(OidcDeviceAuthorization):
-    """OIDC device flow + refresh token caching for Chameleon.
+    """OIDC device flow with refresh token caching.
 
     First call runs the interactive device flow and caches the refresh token.
     Subsequent calls use the cached refresh token silently.
@@ -41,25 +40,19 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         )
         self._last_token_response = None
 
-    def _get_access_token(
-        self, session: ks_session.Session, payload: dict
-    ) -> str:
+    def _get_access_token(self, session, payload):
         """Exchange grant for an access token, capturing the full response.
 
         Dispatches between a simple POST (refresh_token grant) and the
-        device flow polling loop (device_code grant). Always stashes the
-        full response on self._last_token_response so callers can read
-        the refresh_token from it.
+        device flow polling loop (device_code grant). Stashes the full
+        response so callers can extract the refresh_token.
         """
         if payload.get("grant_type") == "refresh_token":
             return self._single_token_request(session, payload)
         return self._poll_device_flow(session, payload)
 
-    def _single_token_request(self, session: ks_session.Session, payload: dict) -> str:
-        """Single POST to the token endpoint (for refresh_token grant).
-
-        Adapted from _OidcBase._get_access_token.
-        """
+    def _single_token_request(self, session, payload):
+        """Single POST to the token endpoint (for refresh_token grant)."""
         if self.client_secret:
             client_auth = (self.client_id, self.client_secret)
         else:
@@ -78,11 +71,10 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         self._last_token_response = response
         return response[self.access_token_type]
 
-    def _poll_device_flow(self, session: ks_session.Session, payload: dict) -> str:
+    def _poll_device_flow(self, session, payload):
         """Poll the token endpoint until user approves the device flow.
 
-        Adapted from OidcDeviceAuthorization._get_access_token, with the
-        addition of stashing the full response on self._last_token_response.
+        Reimplements the parent to capture the full token response.
         """
         if self.verification_uri_complete:
             LOG.warning(
@@ -132,15 +124,8 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         self._last_token_response = response
         return response[self.access_token_type]
 
-    def get_unscoped_auth_ref(
-        self, session: ks_session.Session
-    ) -> access.AccessInfoV3:
-        """Authenticate, trying cached refresh token before device flow.
-
-        1. If a cached refresh token exists, try it silently.
-        2. On failure (expired, revoked), fall back to interactive device flow.
-        3. Always cache the (possibly rotated) refresh token on success.
-        """
+    def get_unscoped_auth_ref(self, session):
+        """Authenticate, trying cached refresh token before device flow."""
         cached = _load_refresh_token(REFRESH_TOKEN_CACHE)
         if cached:
             try:
@@ -158,11 +143,8 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                 LOG.debug("Refresh token failed, falling back to device flow")
             else:
                 resp = self._get_keystone_token(session, access_token)
-                auth_ref = access.create(resp=resp)
-                assert isinstance(auth_ref, access.AccessInfoV3)  # nosec B101
-                return auth_ref
+                return access.create(resp=resp)
 
-        # Device flow — calls our _get_access_token which stashes _last_token_response
         auth_ref = super().get_unscoped_auth_ref(session)
         if self._last_token_response:
             _save_refresh_token(
@@ -172,7 +154,16 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         return auth_ref
 
 
-def _load_refresh_token(path: Path):
+def clear_cache():
+    """Remove cached refresh token. Returns True if a file was removed."""
+    p = REFRESH_TOKEN_CACHE.expanduser()
+    if p.exists():
+        p.unlink()
+        return True
+    return False
+
+
+def _load_refresh_token(path):
     """Read cached refresh token. Returns None if missing or unreadable."""
     p = path.expanduser()
     if not p.exists():
@@ -184,7 +175,7 @@ def _load_refresh_token(path: Path):
         return None
 
 
-def _save_refresh_token(path: Path, refresh_token: str | None) -> None:
+def _save_refresh_token(path, refresh_token):
     """Write refresh token to cache file with mode 0600."""
     if not refresh_token:
         return

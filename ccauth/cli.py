@@ -16,21 +16,23 @@ from pathlib import Path
 from keystoneauth1.session import Session
 
 from . import __version__
-from .auth import AuthConfig, SiteConfig, write_clouds_yaml, write_openrc_file
-from .plugin import ChameleonDeviceAuth, REFRESH_TOKEN_CACHE
-
-DEFAULT_METADATA_URL = "http://169.254.169.254/openstack/latest/vendor_data2.json"
-DEFAULT_DISCOVERY_ENDPOINT = (
-    "https://auth.chameleoncloud.org/auth/realms/chameleon"
-    "/.well-known/openid-configuration"
+from .config import SiteConfig
+from .discover import (
+    DEFAULT_CLIENT_ID,
+    DEFAULT_DISCOVERY_ENDPOINT,
+    SITES_API_URL,
+    VENDORDATA_URL,
+    from_reference_api,
+    from_vendordata,
 )
-DEFAULT_CLIENT_ID = "chi-cli-device-token"
+from .plugin import ChameleonDeviceAuth, clear_cache
+from .writers import write_clouds_yaml, write_openrc_file
 
 logger = logging.getLogger(__name__)
 
 
 def _build_sites(args) -> list[SiteConfig] | None:
-    """Build site list from CLI args or vendordata. Returns None on failure."""
+    """Build site list from CLI args, reference API, or vendordata."""
     if args.auth_url:
         return [SiteConfig(
             auth_url=args.auth_url,
@@ -43,19 +45,30 @@ def _build_sites(args) -> list[SiteConfig] | None:
             discovery_endpoint=args.discovery_endpoint,
         )]
 
-    logger.warning(
-        "No --auth-url provided; fetching site config from vendordata at %s",
-        args.metadata_url,
+    # Try reference API first, then vendordata
+    sites = from_reference_api(
+        api_url=args.sites_api_url,
+        client_id=args.client_id,
+        discovery_endpoint=args.discovery_endpoint,
+        project_id=args.project_id or "",
     )
-    config = AuthConfig.from_vendordata(args.metadata_url)
-    if not config.sites:
-        logger.error(
-            "No site config found. Provide --auth-url or ensure "
-            "vendordata is accessible at %s",
-            args.metadata_url,
-        )
-        return None
-    return config.sites
+    if sites:
+        return sites
+
+    logger.debug("Reference API unavailable, trying vendordata")
+    sites = from_vendordata(
+        metadata_url=args.metadata_url,
+        client_id=args.client_id,
+        discovery_endpoint=args.discovery_endpoint,
+    )
+    if sites:
+        return sites
+
+    logger.error(
+        "No site config found. Provide --auth-url or ensure the "
+        "reference API or vendordata is accessible."
+    )
+    return None
 
 
 def _trigger_auth(site: SiteConfig) -> None:
@@ -89,9 +102,7 @@ def _cmd_login(args) -> int:
 
 
 def _cmd_logout(args) -> int:
-    path = REFRESH_TOKEN_CACHE.expanduser()
-    if path.exists():
-        path.unlink()
+    if clear_cache():
         logger.info("Cleared cached refresh token.")
     else:
         logger.info("No cached token found.")
@@ -117,11 +128,7 @@ def _cmd_openrc(args) -> int:
 
 
 def _add_site_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--metadata-url", default=DEFAULT_METADATA_URL,
-        help="Metadata service URL for vendordata (default: %(default)s)",
-    )
-    parser.add_argument("--auth-url", help="Keystone auth URL")
+    parser.add_argument("--auth-url", help="Keystone auth URL (skips discovery)")
     parser.add_argument("--region-name", help="OpenStack region name")
     parser.add_argument("--project-id", help="OpenStack project ID")
     parser.add_argument("--identity-provider", default="chameleon")
@@ -134,6 +141,14 @@ def _add_site_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cloud-name", default="chameleon",
         help="Cloud name in clouds.yaml (default: chameleon)",
+    )
+    parser.add_argument(
+        "--sites-api-url", default=SITES_API_URL,
+        help="Chameleon reference API URL (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--metadata-url", default=VENDORDATA_URL,
+        help="Metadata service URL for vendordata (default: %(default)s)",
     )
 
 

@@ -1,0 +1,95 @@
+"""Site discovery for Chameleon.
+
+Builds SiteConfigs by querying the Chameleon reference API or the
+OpenStack metadata service (vendordata). Both are optional — users can
+always supply a clouds.yaml directly.
+"""
+import json
+import logging
+import urllib.request
+
+from .config import SiteConfig
+
+logger = logging.getLogger(__name__)
+
+SITES_API_URL = "https://api.chameleoncloud.org/sites"
+VENDORDATA_URL = "http://169.254.169.254/openstack/latest/vendor_data2.json"
+
+DEFAULT_CLIENT_ID = "chi-cli-device-token"
+DEFAULT_DISCOVERY_ENDPOINT = (
+    "https://auth.chameleoncloud.org/auth/realms/chameleon"
+    "/.well-known/openid-configuration"
+)
+
+
+def from_reference_api(
+    api_url=SITES_API_URL,
+    client_id=DEFAULT_CLIENT_ID,
+    discovery_endpoint=DEFAULT_DISCOVERY_ENDPOINT,
+    project_id="",
+):
+    """Fetch available sites from the Chameleon reference API.
+
+    Returns a list of SiteConfigs, one per site.
+    """
+    try:
+        with urllib.request.urlopen(api_url, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError):
+        logger.debug("Could not fetch sites from %s", api_url)
+        return []
+
+    sites = []
+    for item in data.get("items", []):
+        web = item.get("web", "")
+        name = item.get("name", "")
+        uid = item.get("uid", "")
+        if not web or not uid:
+            continue
+        sites.append(SiteConfig(
+            auth_url=f"{web}:5000/v3",
+            region_name=name,
+            cloud_name=uid,
+            client_id=client_id,
+            discovery_endpoint=discovery_endpoint,
+            project_id=project_id,
+        ))
+    return sites
+
+
+def from_vendordata(
+    metadata_url=VENDORDATA_URL,
+    client_id=DEFAULT_CLIENT_ID,
+    discovery_endpoint=DEFAULT_DISCOVERY_ENDPOINT,
+):
+    """Fetch site config from the OpenStack metadata service.
+
+    Only works when running on a Chameleon instance. Returns a list
+    with one SiteConfig, or an empty list on failure.
+    """
+    try:
+        with urllib.request.urlopen(metadata_url, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError):
+        logger.debug("Could not fetch vendordata from %s", metadata_url)
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    chi = data.get("chameleon", {})
+    if not isinstance(chi, dict):
+        return []
+
+    auth_url = chi.get("auth_url", "")
+    if not auth_url:
+        return []
+
+    return [SiteConfig(
+        auth_url=auth_url,
+        region_name=chi.get("region", ""),
+        cloud_name="chameleon",
+        client_id=client_id,
+        discovery_endpoint=discovery_endpoint,
+        project_id=chi.get("project_id", ""),
+    )]

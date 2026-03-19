@@ -1,13 +1,3 @@
-"""ccauth — Chameleon OIDC device flow plugin for keystoneauth1."""
-from .plugin import ChameleonDeviceAuth
-from .auth import AuthConfig, SiteConfig, write_clouds_yaml, write_openrc_file
+"""ccauth — OIDC device flow auth plugin for OpenStack on Chameleon."""
 
-__all__ = [
-    "ChameleonDeviceAuth",
-    "AuthConfig",
-    "SiteConfig",
-    "write_clouds_yaml",
-    "write_openrc_file",
-]
-
-__version__ = "0.2.0"
+__version__ = "0.3.0"

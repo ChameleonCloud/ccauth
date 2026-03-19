@@ -4,8 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from ccauth.auth import SiteConfig, write_clouds_yaml, write_openrc_file
-from ccauth.plugin import _load_refresh_token, _save_refresh_token, REFRESH_TOKEN_CACHE
+from ccauth.config import SiteConfig
+from ccauth.plugin import _load_refresh_token, _save_refresh_token
+from ccauth.writers import write_clouds_yaml, write_openrc_file
 
 
 SITE = SiteConfig(
@@ -13,6 +14,8 @@ SITE = SiteConfig(
     region_name="CHI@UC",
     project_id="proj123",
     cloud_name="chi_uc",
+    client_id="chi-cli-device-token",
+    discovery_endpoint="https://auth.chameleoncloud.org/auth/realms/chameleon/.well-known/openid-configuration",
 )
 
 
@@ -62,7 +65,6 @@ def test_write_clouds_yaml_mode(tmp_path):
 def test_write_clouds_yaml_skip_existing(tmp_path):
     path = tmp_path / "clouds.yaml"
     write_clouds_yaml([SITE], path)
-    # Second write without force should skip
     result = write_clouds_yaml([SITE], path)
     assert result is False
 
@@ -75,6 +77,8 @@ def test_write_clouds_yaml_force_overwrites(tmp_path):
         region_name="NEW",
         project_id="proj999",
         cloud_name="chi_uc",
+        client_id=SITE.client_id,
+        discovery_endpoint=SITE.discovery_endpoint,
     )
     result = write_clouds_yaml([site2], path, force=True)
     assert result is True
@@ -105,3 +109,40 @@ def test_write_openrc_skip_existing(tmp_path):
     write_openrc_file(SITE, path)
     result = write_openrc_file(SITE, path)
     assert result is False
+
+
+def test_discover_from_reference_api_parses_response(tmp_path, monkeypatch):
+    """Test that from_reference_api correctly builds SiteConfigs."""
+    from ccauth import discover
+
+    api_response = json.dumps({
+        "items": [
+            {
+                "uid": "uc",
+                "name": "CHI@UC",
+                "web": "https://chi.uc.chameleoncloud.org",
+            },
+            {
+                "uid": "tacc",
+                "name": "CHI@TACC",
+                "web": "https://chi.tacc.chameleoncloud.org",
+            },
+        ]
+    })
+
+    def fake_urlopen(url, timeout=None):
+        from io import BytesIO
+        resp = BytesIO(api_response.encode())
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    monkeypatch.setattr(discover.urllib.request, "urlopen", fake_urlopen)
+
+    sites = discover.from_reference_api(project_id="proj123")
+    assert len(sites) == 2
+    assert sites[0].auth_url == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert sites[0].region_name == "CHI@UC"
+    assert sites[0].cloud_name == "uc"
+    assert sites[1].auth_url == "https://chi.tacc.chameleoncloud.org:5000/v3"
+    assert sites[1].cloud_name == "tacc"
