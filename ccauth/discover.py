@@ -4,6 +4,7 @@ Builds SiteConfigs by querying the Chameleon reference API or the
 OpenStack metadata service (vendordata). Both are optional — users can
 always supply a clouds.yaml directly.
 """
+
 import json
 import logging
 import urllib.request
@@ -46,14 +47,16 @@ def from_reference_api(
         uid = item.get("uid", "")
         if not web or not uid:
             continue
-        sites.append(SiteConfig(
-            auth_url=f"{web}:5000/v3",
-            region_name=name,
-            cloud_name=uid,
-            client_id=client_id,
-            discovery_endpoint=discovery_endpoint,
-            project_id=project_id,
-        ))
+        sites.append(
+            SiteConfig(
+                auth_url=f"{web}:5000/v3",
+                region_name=name,
+                cloud_name=uid,
+                client_id=client_id,
+                discovery_endpoint=discovery_endpoint,
+                project_id=project_id,
+            )
+        )
     return sites
 
 
@@ -85,11 +88,13 @@ def from_vendordata(
     if not auth_url:
         return []
 
-    return [SiteConfig(
-        auth_url=auth_url,
-        region_name=chi.get("region", ""),
-        cloud_name="chameleon",
-        client_id=client_id,
-        discovery_endpoint=discovery_endpoint,
-        project_id=chi.get("project_id", ""),
-    )]
+    return [
+        SiteConfig(
+            auth_url=auth_url,
+            region_name=chi.get("region", ""),
+            cloud_name="chameleon",
+            client_id=client_id,
+            discovery_endpoint=discovery_endpoint,
+            project_id=chi.get("project_id", ""),
+        )
+    ]

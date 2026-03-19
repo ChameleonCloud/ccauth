@@ -1,6 +1,5 @@
 import json
 import stat
-from pathlib import Path
 
 import yaml
 
@@ -83,7 +82,9 @@ def test_write_clouds_yaml_force_overwrites(tmp_path):
     result = write_clouds_yaml([site2], path, force=True)
     assert result is True
     data = yaml.safe_load(path.read_text())
-    assert data["clouds"]["chi_uc"]["auth"]["auth_url"] == "https://new.example.com:5000"
+    assert (
+        data["clouds"]["chi_uc"]["auth"]["auth_url"] == "https://new.example.com:5000"
+    )
 
 
 def test_write_openrc(tmp_path):
@@ -115,23 +116,26 @@ def test_discover_from_reference_api_parses_response(tmp_path, monkeypatch):
     """Test that from_reference_api correctly builds SiteConfigs."""
     from ccauth import discover
 
-    api_response = json.dumps({
-        "items": [
-            {
-                "uid": "uc",
-                "name": "CHI@UC",
-                "web": "https://chi.uc.chameleoncloud.org",
-            },
-            {
-                "uid": "tacc",
-                "name": "CHI@TACC",
-                "web": "https://chi.tacc.chameleoncloud.org",
-            },
-        ]
-    })
+    api_response = json.dumps(
+        {
+            "items": [
+                {
+                    "uid": "uc",
+                    "name": "CHI@UC",
+                    "web": "https://chi.uc.chameleoncloud.org",
+                },
+                {
+                    "uid": "tacc",
+                    "name": "CHI@TACC",
+                    "web": "https://chi.tacc.chameleoncloud.org",
+                },
+            ]
+        }
+    )
 
     def fake_urlopen(url, timeout=None):
         from io import BytesIO
+
         resp = BytesIO(api_response.encode())
         resp.__enter__ = lambda s: s
         resp.__exit__ = lambda s, *a: None

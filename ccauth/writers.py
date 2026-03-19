@@ -1,4 +1,5 @@
 """Write clouds.yaml and openrc files from SiteConfig."""
+
 import logging
 import os
 import stat
@@ -7,7 +8,6 @@ from pathlib import Path
 
 import yaml
 
-from .config import SiteConfig
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,9 @@ def write_openrc_file(site, output_path, force=False):
     output_path = Path(output_path).expanduser()
 
     if output_path.exists() and not force:
-        logger.info("openrc already exists at %s. Use --force to overwrite.", output_path)
+        logger.info(
+            "openrc already exists at %s. Use --force to overwrite.", output_path
+        )
         return False
 
     if output_path.exists() and force:
@@ -81,7 +83,7 @@ def write_openrc_file(site, output_path, force=False):
     lines = [
         "#!/usr/bin/env bash",
         "",
-        f'export OS_AUTH_TYPE="v3chameleonoidc"',
+        'export OS_AUTH_TYPE="v3chameleonoidc"',
         f'export OS_AUTH_URL="{site.auth_url}"',
         f'export OS_IDENTITY_PROVIDER="{site.identity_provider}"',
         f'export OS_PROTOCOL="{site.protocol}"',

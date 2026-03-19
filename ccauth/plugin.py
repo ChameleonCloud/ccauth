@@ -4,6 +4,7 @@ Subclasses OidcDeviceAuthorization to add local refresh token caching.
 On first use, runs the interactive device flow and caches the refresh token.
 On subsequent use, silently refreshes without user interaction.
 """
+
 import json
 import logging
 import os
@@ -14,7 +15,6 @@ from urllib.parse import urlencode
 
 from keystoneauth1 import access, exceptions
 from keystoneauth1.identity.v3.oidc import OidcDeviceAuthorization
-from keystoneauth1 import session as ks_session
 
 LOG = logging.getLogger(__name__)
 

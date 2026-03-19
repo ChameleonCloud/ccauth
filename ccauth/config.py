@@ -1,4 +1,5 @@
 """Site configuration dataclass."""
+
 from dataclasses import dataclass
 
 

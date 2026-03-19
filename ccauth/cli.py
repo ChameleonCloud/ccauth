@@ -6,6 +6,7 @@ Subcommands:
   clouds-yaml — Write a clouds.yaml file
   openrc      — Write an openrc file
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,16 +35,18 @@ logger = logging.getLogger(__name__)
 def _build_sites(args) -> list[SiteConfig] | None:
     """Build site list from CLI args, reference API, or vendordata."""
     if args.auth_url:
-        return [SiteConfig(
-            auth_url=args.auth_url,
-            region_name=args.region_name or "",
-            project_id=args.project_id or "",
-            identity_provider=args.identity_provider,
-            protocol=args.protocol,
-            cloud_name=args.cloud_name,
-            client_id=args.client_id,
-            discovery_endpoint=args.discovery_endpoint,
-        )]
+        return [
+            SiteConfig(
+                auth_url=args.auth_url,
+                region_name=args.region_name or "",
+                project_id=args.project_id or "",
+                identity_provider=args.identity_provider,
+                protocol=args.protocol,
+                cloud_name=args.cloud_name,
+                client_id=args.client_id,
+                discovery_endpoint=args.discovery_endpoint,
+            )
+        ]
 
     # Try reference API first, then vendordata
     sites = from_reference_api(
@@ -135,19 +138,23 @@ def _add_site_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--protocol", default="openid")
     parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
     parser.add_argument(
-        "--discovery-endpoint", default=DEFAULT_DISCOVERY_ENDPOINT,
+        "--discovery-endpoint",
+        default=DEFAULT_DISCOVERY_ENDPOINT,
         help="Keycloak OIDC discovery URL (default: %(default)s)",
     )
     parser.add_argument(
-        "--cloud-name", default="chameleon",
+        "--cloud-name",
+        default="chameleon",
         help="Cloud name in clouds.yaml (default: chameleon)",
     )
     parser.add_argument(
-        "--sites-api-url", default=SITES_API_URL,
+        "--sites-api-url",
+        default=SITES_API_URL,
         help="Chameleon reference API URL (default: %(default)s)",
     )
     parser.add_argument(
-        "--metadata-url", default=VENDORDATA_URL,
+        "--metadata-url",
+        default=VENDORDATA_URL,
         help="Metadata service URL for vendordata (default: %(default)s)",
     )
 
@@ -173,14 +180,18 @@ def main(argv=None) -> int:
     _add_site_args(clouds_p)
     clouds_p.add_argument("--output", required=True, help="Output file path")
     clouds_p.add_argument(
-        "--force", action="store_true", help="Overwrite existing entries",
+        "--force",
+        action="store_true",
+        help="Overwrite existing entries",
     )
 
     openrc_p = sub.add_parser("openrc", help="Write an openrc file")
     _add_site_args(openrc_p)
     openrc_p.add_argument("--output", required=True, help="Output file path")
     openrc_p.add_argument(
-        "--force", action="store_true", help="Overwrite existing entries",
+        "--force",
+        action="store_true",
+        help="Overwrite existing entries",
     )
 
     args = parser.parse_args(argv)
