@@ -1,13 +1,11 @@
 """Write clouds.yaml and openrc files from SiteConfig."""
 
 import logging
-import os
-import stat
-import time
 from pathlib import Path
 
 import yaml
 
+from ._fileutils import backup_file, load_yaml, write_secure
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +16,7 @@ def write_clouds_yaml(sites, output_path, force=False):
     Returns True if the file was written.
     """
     output_path = Path(output_path).expanduser()
-
-    data = {}
-    if output_path.exists():
-        try:
-            with output_path.open(encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        except (OSError, yaml.YAMLError):
-            data = {}
+    data = load_yaml(output_path)
 
     if "clouds" not in data or not isinstance(data["clouds"], dict):
         data["clouds"] = {}
@@ -60,7 +51,7 @@ def write_clouds_yaml(sites, output_path, force=False):
     if not written:
         return False
 
-    _write_secure(output_path, yaml.safe_dump(data, default_flow_style=False))
+    write_secure(output_path, yaml.safe_dump(data, default_flow_style=False))
     return True
 
 
@@ -78,7 +69,7 @@ def write_openrc_file(site, output_path, force=False):
         return False
 
     if output_path.exists() and force:
-        _backup_file(output_path)
+        backup_file(output_path)
 
     lines = [
         "#!/usr/bin/env bash",
@@ -93,23 +84,5 @@ def write_openrc_file(site, output_path, force=False):
         f'export OS_REGION_NAME="{site.region_name}"',
     ]
 
-    _write_secure(output_path, "\n".join(lines) + "\n")
+    write_secure(output_path, "\n".join(lines) + "\n")
     return True
-
-
-def _backup_file(path):
-    backup = path.with_stem(path.stem + f".bak.{int(time.time())}")
-    try:
-        os.replace(path, backup)
-        logger.warning("Backed up %s to %s", path, backup)
-    except OSError as e:
-        raise RuntimeError(f"Could not back up {path} to {backup}: {e}") from e
-
-
-def _write_secure(path, content):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        f.write(content)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp, path)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class SiteConfig:
+class SiteConfig:  # pylint: disable=too-many-instance-attributes
     """Everything needed to authenticate to one OpenStack site via OIDC."""
 
     auth_url: str

@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 ccauth = "ccauth.cli:main"
+cc-login = "ccauth.cli:main_cc_login"
 
 [project.entry-points."keystoneauth1.plugin"]
 v3chameleonoidc = "ccauth.loader:ChameleonDeviceAuthLoader"
