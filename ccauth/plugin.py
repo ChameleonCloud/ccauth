@@ -139,7 +139,7 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                     REFRESH_TOKEN_CACHE,
                     self._last_token_response.get("refresh_token", cached),
                 )
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 LOG.debug("Refresh token failed, falling back to device flow")
             else:
                 resp = self._get_keystone_token(session, access_token)

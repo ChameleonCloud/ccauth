@@ -1,4 +1,8 @@
-"""Site and project discovery for Chameleon."""
+"""Site and project discovery for Chameleon.
+
+Builds SiteConfigs by querying the Chameleon reference API or the
+OpenStack metadata service (vendordata).
+"""
 
 import json
 import logging
@@ -9,12 +13,26 @@ from .config import SiteConfig
 logger = logging.getLogger(__name__)
 
 SITES_API_URL = "https://api.chameleoncloud.org/sites"
+VENDORDATA_URL = "http://169.254.169.254/openstack/latest/vendor_data2.json"
+
+DEFAULT_CLIENT_ID = "chi-cli-device-token"
+DEFAULT_DISCOVERY_ENDPOINT = (
+    "https://auth.chameleoncloud.org/auth/realms/chameleon"
+    "/.well-known/openid-configuration"
+)
+
+
+def base_url(url: str) -> str:
+    """Strip trailing /v3 and slashes from an auth URL."""
+    return url.rstrip("/").removesuffix("/v3").rstrip("/")
 
 
 def from_reference_api(api_url=SITES_API_URL):
     """Fetch available sites from the Chameleon reference API.
 
-    Returns a list of SiteConfigs, one per site.
+    Returns a list of SiteConfigs, one per site. auth config fields
+    (client_id, discovery_endpoint) are left as empty strings and should
+    be filled in by the caller.
     """
     try:
         with urllib.request.urlopen(api_url, timeout=20) as resp:
@@ -40,16 +58,50 @@ def from_reference_api(api_url=SITES_API_URL):
     return sites
 
 
+def from_vendordata(metadata_url=VENDORDATA_URL):
+    """Fetch site config from the OpenStack metadata service.
+
+    Only works when running on a Chameleon instance. Returns a list
+    with one SiteConfig, or an empty list on failure.
+    """
+    try:
+        with urllib.request.urlopen(metadata_url, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError):
+        logger.debug("Could not fetch vendordata from %s", metadata_url)
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    chi = data.get("chameleon", {})
+    if not isinstance(chi, dict):
+        return []
+
+    auth_url = chi.get("auth_url", "")
+    if not auth_url:
+        return []
+
+    region = chi.get("region", "")
+    cloud_name = "kvm" if "kvm" in region.lower() else "chameleon"
+
+    return [
+        SiteConfig(
+            auth_url=auth_url,
+            region_name=region,
+            cloud_name=cloud_name,
+            client_id=DEFAULT_CLIENT_ID,
+            discovery_endpoint=DEFAULT_DISCOVERY_ENDPOINT,
+            project_id=chi.get("project_id", ""),
+        )
+    ]
+
+
 def list_projects_at(session) -> list[dict]:
     """Return projects the session can scope to via /v3/auth/projects.
 
-    Caller supplies an unscoped (or scoped) keystoneauth Session — typically
-    via openstack.connect(cloud=...).session. Returns the raw project dicts.
+    Caller supplies an unscoped keystoneauth Session. Returns the raw
+    project dicts from Keystone.
     """
-    url = _base_url(session.auth.auth_url) + "/v3/auth/projects"
+    url = base_url(session.auth.auth_url) + "/v3/auth/projects"
     return session.get(url, authenticated=True).json().get("projects", [])
-
-
-def _base_url(url: str) -> str:
-    """Strip trailing /v3 and slashes from an auth URL."""
-    return url.rstrip("/").removesuffix("/v3").rstrip("/")

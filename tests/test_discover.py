@@ -70,10 +70,10 @@ def test_from_reference_api_handles_unreachable(monkeypatch):
 
 
 def test_base_url_strips_v3():
-    assert discover._base_url("https://x:5000/v3") == "https://x:5000"
-    assert discover._base_url("https://x:5000/v3/") == "https://x:5000"
-    assert discover._base_url("https://x:5000/") == "https://x:5000"
-    assert discover._base_url("https://x:5000") == "https://x:5000"
+    assert discover.base_url("https://x:5000/v3") == "https://x:5000"
+    assert discover.base_url("https://x:5000/v3/") == "https://x:5000"
+    assert discover.base_url("https://x:5000/") == "https://x:5000"
+    assert discover.base_url("https://x:5000") == "https://x:5000"
 
 
 def test_list_projects_at_calls_keystone():
