@@ -174,6 +174,11 @@ def _extract_id_secret(app_cred: Dict[str, Any]) -> tuple[str, str]:
     return cred_id, cred_secret
 
 
+def _v3_base(auth_url: str) -> str:
+    base = auth_url.rstrip("/")
+    return base if base.endswith("/v3") else f"{base}/v3"
+
+
 def _get_user_id(sess: Session) -> str:
     access = sess.auth.get_access(sess)
     user_id = access.user_id
@@ -194,7 +199,7 @@ def _create_app_cred(
         exp = datetime.now(timezone.utc) + timedelta(hours=config.app_cred_expires_in_hours)
         body["expires_at"] = exp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    url = f"{config.auth_url.rstrip('/')}/users/{user_id}/application_credentials"
+    url = f"{_v3_base(config.auth_url)}/users/{user_id}/application_credentials"
     resp = sess.post(url, json={"application_credential": body}, authenticated=True)
     result = resp.json()["application_credential"]
     result.setdefault("user_id", user_id)
@@ -204,7 +209,7 @@ def _create_app_cred(
 def _delete_app_cred(
     sess: Session, auth_url: str, user_id: str, cred_name: str
 ) -> bool:
-    url = f"{auth_url.rstrip('/')}/users/{user_id}/application_credentials"
+    url = f"{_v3_base(auth_url)}/users/{user_id}/application_credentials"
     try:
         resp = sess.get(url, authenticated=True)
         for cred in resp.json().get("application_credentials", []):

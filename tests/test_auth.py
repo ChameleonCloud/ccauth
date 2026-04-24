@@ -197,6 +197,29 @@ def test_appcred_cache_expired_cred(tmp_path):
     assert _read_cache(cache, ttl_seconds=86400) is None
 
 
+def test_v3_base_appends_v3_when_missing():
+    from ccauth.appcred import _v3_base
+    assert _v3_base("https://chi.uc.chameleoncloud.org:5000") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/v3") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/v3/") == "https://chi.uc.chameleoncloud.org:5000/v3"
+
+
+def test_create_app_cred_uses_v3_url(tmp_path, monkeypatch):
+    """Ensure app cred POST goes to /v3/users/... even when auth_url has no /v3."""
+    new_cred = {"id": "cred-1", "name": "chi-device-flow-auth-20240101", "secret": "s"}
+    mock_sess = _mock_session(monkeypatch, new_cred)
+
+    config = AppCredConfig(
+        auth_url="https://chi.uc.chameleoncloud.org:5000",  # no /v3
+        app_cred_cache_path=tmp_path / "app-cred.json",
+    )
+    ensure_app_cred(config)
+
+    posted_url = mock_sess.post.call_args[0][0]
+    assert "/v3/users/" in posted_url
+
+
 def test_appcred_cache_corrupt(tmp_path):
     cache = tmp_path / "app-cred.json"
     cache.write_text("not json")
