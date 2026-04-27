@@ -69,11 +69,13 @@ def _build_sites(args) -> list[SiteConfig] | None:
         discovery_endpoint=args.discovery_endpoint,
     )
 
-    # If the vendordata site isn't in the reference API (e.g. KVM), add it
+    # Merge vendordata site: put it first so it's used as the login site.
+    # If it's already in the reference API (same auth_url), move it to front;
+    # otherwise (e.g. KVM) prepend it.
     if vd_sites:
         vd = vd_sites[0]
-        if not any(s.auth_url == vd.auth_url for s in sites):
-            sites.append(vd)
+        sites = [s for s in sites if s.auth_url != vd.auth_url]
+        sites.insert(0, vd)
 
     if not sites:
         logger.error(
