@@ -61,18 +61,25 @@ def _build_sites(args) -> list[SiteConfig] | None:
         discovery_endpoint=args.discovery_endpoint,
         project_id=args.project_id or "",
     )
-    if sites:
-        return sites
 
-    logger.debug("Reference API unavailable, trying vendordata")
-    sites = from_vendordata(
+    vd_sites = from_vendordata(
         metadata_url=args.metadata_url,
         client_id=args.client_id,
         discovery_endpoint=args.discovery_endpoint,
     )
+
     if sites:
+        if vd_sites and not args.project_id:
+            vd = vd_sites[0]
+            for site in sites:
+                if site.auth_url == vd.auth_url and not site.project_id:
+                    site.project_id = vd.project_id
         return sites
 
+    if vd_sites:
+        return vd_sites
+
+    logger.debug("Reference API and vendordata both unavailable")
     logger.error(
         "No site config found. Provide --auth-url or ensure the "
         "reference API or vendordata is accessible."
