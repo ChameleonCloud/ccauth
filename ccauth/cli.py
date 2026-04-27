@@ -54,12 +54,13 @@ def _build_sites(args) -> list[SiteConfig] | None:
             )
         ]
 
-    # Try reference API first, then vendordata
-    sites = from_reference_api(
-        api_url=args.sites_api_url,
-        client_id=args.client_id,
-        discovery_endpoint=args.discovery_endpoint,
-        project_id=args.project_id or "",
+    # Collect sites from both sources independently
+    sites = list(
+        from_reference_api(
+            api_url=args.sites_api_url,
+            client_id=args.client_id,
+            discovery_endpoint=args.discovery_endpoint,
+        )
     )
 
     vd_sites = from_vendordata(
@@ -68,23 +69,26 @@ def _build_sites(args) -> list[SiteConfig] | None:
         discovery_endpoint=args.discovery_endpoint,
     )
 
-    if sites:
-        if vd_sites and not args.project_id:
-            vd = vd_sites[0]
-            for site in sites:
-                if site.auth_url == vd.auth_url and not site.project_id:
-                    site.project_id = vd.project_id
-        return sites
-
+    # If the vendordata site isn't in the reference API (e.g. KVM), add it
     if vd_sites:
-        return vd_sites
+        vd = vd_sites[0]
+        if not any(s.auth_url == vd.auth_url for s in sites):
+            sites.append(vd)
 
-    logger.debug("Reference API and vendordata both unavailable")
-    logger.error(
-        "No site config found. Provide --auth-url or ensure the "
-        "reference API or vendordata is accessible."
-    )
-    return None
+    if not sites:
+        logger.error(
+            "No site config found. Provide --auth-url or ensure the "
+            "reference API or vendordata is accessible."
+        )
+        return None
+
+    # Apply project_id: explicit flag wins, otherwise use vendordata
+    project_id = args.project_id or (vd_sites[0].project_id if vd_sites else "")
+    if project_id:
+        for site in sites:
+            site.project_id = project_id
+
+    return sites
 
 
 def _trigger_auth(site: SiteConfig) -> None:
