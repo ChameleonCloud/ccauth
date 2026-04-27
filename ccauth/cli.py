@@ -138,7 +138,7 @@ def _cmd_login(args) -> int:
             clouds_yaml,
         )
     else:
-        logger.info("Run 'openstack <command>' to interact with Chameleon.")
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
     return 0
 
 
@@ -156,6 +156,7 @@ def _cmd_clouds_yaml(args) -> int:
         return 1
     if write_clouds_yaml(sites, Path(args.output), force=args.force):
         logger.info("Wrote clouds.yaml to %s", args.output)
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
     return 0
 
 
@@ -165,6 +166,7 @@ def _cmd_openrc(args) -> int:
         return 1
     if write_openrc_file(sites[0], Path(args.output), force=args.force):
         logger.info("Wrote openrc to %s", args.output)
+        logger.info("Source this file to set up OpenStack credentials in your environment.")
     return 0
 
 
