@@ -69,13 +69,11 @@ def _build_sites(args) -> list[SiteConfig] | None:
         discovery_endpoint=args.discovery_endpoint,
     )
 
-    # Merge vendordata site: put it first so it's used as the login site.
-    # If it's already in the reference API (same auth_url), move it to front;
-    # otherwise (e.g. KVM) prepend it.
+    # If the vendordata site isn't in the reference API (e.g. KVM, edge), append it
     if vd_sites:
         vd = vd_sites[0]
-        sites = [s for s in sites if s.auth_url != vd.auth_url]
-        sites.insert(0, vd)
+        if not any(s.auth_url == vd.auth_url for s in sites):
+            sites.append(vd)
 
     if not sites:
         logger.error(
@@ -111,8 +109,20 @@ def _cmd_login(args) -> int:
     sites = _build_sites(args)
     if not sites:
         return 1
+    # Prefer the current site (vendordata) for login — it's guaranteed to work
+    # for the user's account. Fall back to sites[0] when not on an instance.
+    vd_sites = from_vendordata(
+        metadata_url=args.metadata_url,
+        client_id=args.client_id,
+        discovery_endpoint=args.discovery_endpoint,
+    )
+    if vd_sites:
+        vd_auth_url = vd_sites[0].auth_url
+        login_site = next((s for s in sites if s.auth_url == vd_auth_url), sites[0])
+    else:
+        login_site = sites[0]
     try:
-        _trigger_auth(sites[0])
+        _trigger_auth(login_site)
     except KeyboardInterrupt:
         logger.error("\nAuthentication cancelled.")
         return 1
