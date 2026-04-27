@@ -38,6 +38,11 @@ from .writers import write_clouds_yaml, write_openrc_file
 logger = logging.getLogger(__name__)
 
 
+def _base_url(url: str) -> str:
+    """Normalize auth URL for comparison — strips trailing /v3 and slashes."""
+    return url.rstrip("/").removesuffix("/v3").rstrip("/")
+
+
 def _build_sites(args) -> list[SiteConfig] | None:
     """Build site list from CLI args, reference API, or vendordata."""
     if args.auth_url:
@@ -69,11 +74,16 @@ def _build_sites(args) -> list[SiteConfig] | None:
         discovery_endpoint=args.discovery_endpoint,
     )
 
-    # If the vendordata site isn't in the reference API (e.g. KVM, edge), append it
+    # Merge vendordata site. If the site already exists in the reference API,
+    # keep one entry and prefer whichever cloud_name isn't "chameleon".
+    # If absent (KVM, edge, etc.), append it.
     if vd_sites:
         vd = vd_sites[0]
-        if not any(s.auth_url == vd.auth_url for s in sites):
+        match = next((s for s in sites if _base_url(s.auth_url) == _base_url(vd.auth_url)), None)
+        if match is None:
             sites.append(vd)
+        elif match.cloud_name == "chameleon" and vd.cloud_name != "chameleon":
+            match.cloud_name = vd.cloud_name
 
     if not sites:
         logger.error(
@@ -117,8 +127,10 @@ def _cmd_login(args) -> int:
         discovery_endpoint=args.discovery_endpoint,
     )
     if vd_sites:
-        vd_auth_url = vd_sites[0].auth_url
-        login_site = next((s for s in sites if s.auth_url == vd_auth_url), sites[0])
+        login_site = next(
+            (s for s in sites if _base_url(s.auth_url) == _base_url(vd_sites[0].auth_url)),
+            sites[0],
+        )
     else:
         login_site = sites[0]
     try:
