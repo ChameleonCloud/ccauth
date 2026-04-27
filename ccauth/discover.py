@@ -88,11 +88,14 @@ def from_vendordata(
     if not auth_url:
         return []
 
+    region = chi.get("region", "")
+    cloud_name = "kvm" if "kvm" in region.lower() else "chameleon"
+
     return [
         SiteConfig(
             auth_url=auth_url,
-            region_name=chi.get("region", ""),
-            cloud_name="chameleon",
+            region_name=region,
+            cloud_name=cloud_name,
             client_id=client_id,
             discovery_endpoint=discovery_endpoint,
             project_id=chi.get("project_id", ""),
