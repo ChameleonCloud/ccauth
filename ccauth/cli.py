@@ -118,6 +118,15 @@ def _cmd_login(args) -> int:
         logger.error("Authentication failed: %s", e)
         logger.debug("Details:", exc_info=True)
         return 1
+    logger.info("Authenticated successfully. Refresh token cached.")
+    clouds_yaml = Path("~/.config/openstack/clouds.yaml").expanduser()
+    if not clouds_yaml.exists():
+        logger.info(
+            "Next: run 'ccauth clouds-yaml --output %s' to set up OpenStack credentials.",
+            clouds_yaml,
+        )
+    else:
+        logger.info("Run 'openstack <command>' to interact with Chameleon.")
     return 0
 
 
