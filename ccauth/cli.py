@@ -32,7 +32,7 @@ from .discover import (
     from_reference_api,
     from_vendordata,
 )
-from .plugin import ChameleonDeviceAuth, clear_cache
+from .plugin import REFRESH_TOKEN_CACHE, ChameleonDeviceAuth, clear_cache
 from .writers import write_clouds_yaml, write_openrc_file
 
 logger = logging.getLogger(__name__)
@@ -92,13 +92,79 @@ def _build_sites(args) -> list[SiteConfig] | None:
         )
         return None
 
-    # Apply project_id: explicit flag wins, otherwise use vendordata
+    # Apply project_id to the current site so _enrich_project_ids can use it
+    # as a seed to discover the matching ID at every other site.
+    # --project-id overrides vendordata but follows the same single-site logic.
+    # If there is no current site to anchor to, fall back to applying it everywhere.
     project_id = args.project_id or (vd_sites[0].project_id if vd_sites else "")
     if project_id:
-        for site in sites:
-            site.project_id = project_id
+        current = (
+            next(
+                (s for s in sites if _base_url(s.auth_url) == _base_url(vd_sites[0].auth_url)),
+                None,
+            )
+            if vd_sites
+            else None
+        )
+        if current:
+            current.project_id = project_id
+        else:
+            for site in sites:
+                site.project_id = project_id
 
     return sites
+
+
+def _list_projects_at(site: SiteConfig) -> list[dict]:
+    """Return Keystone projects available at a site via unscoped OIDC auth."""
+    plugin = ChameleonDeviceAuth(
+        auth_url=site.auth_url,
+        identity_provider=site.identity_provider,
+        protocol=site.protocol,
+        client_id=site.client_id,
+        discovery_endpoint=site.discovery_endpoint,
+        scope="openid",
+    )
+    sess = Session(auth=plugin)
+    try:
+        url = _base_url(site.auth_url) + "/v3/auth/projects"
+        return sess.get(url, authenticated=True).json().get("projects", [])
+    except Exception as exc:
+        logger.debug("Could not list projects at %s: %s", site.auth_url, exc)
+        return []
+
+
+def _enrich_project_ids(sites: list[SiteConfig]) -> None:
+    """Discover project_id at each site by matching the current site's project name."""
+    if not REFRESH_TOKEN_CACHE.expanduser().exists():
+        logger.debug("No cached token; skipping project ID discovery.")
+        return
+
+    current = next((s for s in sites if s.project_id), None)
+    if not current:
+        return
+
+    all_projects = _list_projects_at(current)
+    current_project = next((p for p in all_projects if p["id"] == current.project_id), None)
+    if not current_project:
+        logger.debug("Could not resolve name for project %s", current.project_id)
+        return
+
+    project_name = current_project["name"]
+    logger.debug("Discovering project '%s' across all sites", project_name)
+
+    for site in sites:
+        if site.project_id:
+            continue
+        match = next(
+            (p for p in _list_projects_at(site) if p["name"] == project_name),
+            None,
+        )
+        if match:
+            site.project_id = match["id"]
+            logger.debug("Found '%s' at %s: %s", project_name, site.region_name, match["id"])
+        else:
+            logger.debug("Project '%s' not found at %s", project_name, site.region_name)
 
 
 def _trigger_auth(site: SiteConfig) -> None:
@@ -166,6 +232,7 @@ def _cmd_clouds_yaml(args) -> int:
     sites = _build_sites(args)
     if not sites:
         return 1
+    _enrich_project_ids(sites)
     if write_clouds_yaml(sites, Path(args.output), force=args.force):
         logger.info("Wrote clouds.yaml to %s", args.output)
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
