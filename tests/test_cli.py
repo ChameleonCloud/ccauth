@@ -561,13 +561,34 @@ def test_cmd_clouds_yaml_all_projects_no_token_returns_error(tmp_path, monkeypat
     assert main(["clouds-yaml", "--output", str(output), "--all-projects"]) == 1
 
 
-def test_cmd_openrc_writes_current_site(tmp_path, monkeypatch):
-    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC])
+def test_cmd_openrc_uses_vendordata_site(tmp_path, monkeypatch):
+    monkeypatch.setattr("ccauth.cli.from_vendordata", lambda **_: [replace(KVM)])
     output = tmp_path / "openrc.sh"
     assert main(["openrc", "--output", str(output)]) == 0
     content = output.read_text()
     assert 'OS_AUTH_TYPE="v3chameleonoidc"' in content
+    assert f'OS_AUTH_URL="{KVM.auth_url}"' in content
+
+
+def test_cmd_openrc_uses_explicit_auth_url(tmp_path):
+    output = tmp_path / "openrc.sh"
+    assert main(["openrc", "--output", str(output),
+                 "--auth-url", TACC.auth_url, "--project-id", "p1"]) == 0
+    content = output.read_text()
     assert f'OS_AUTH_URL="{TACC.auth_url}"' in content
+    assert 'OS_PROJECT_ID="p1"' in content
+
+
+def test_cmd_openrc_errors_without_vendordata_or_auth_url(tmp_path, monkeypatch):
+    monkeypatch.setattr("ccauth.cli.from_vendordata", lambda **_: [])
+    assert main(["openrc", "--output", str(tmp_path / "openrc.sh")]) == 1
+
+
+def test_cmd_openrc_explicit_project_id_overrides_vendordata(tmp_path, monkeypatch):
+    monkeypatch.setattr("ccauth.cli.from_vendordata", lambda **_: [replace(KVM)])
+    output = tmp_path / "openrc.sh"
+    assert main(["openrc", "--output", str(output), "--project-id", "override"]) == 0
+    assert 'OS_PROJECT_ID="override"' in output.read_text()
 
 
 def test_cmd_discover_projects_no_token_returns_error(tmp_path, monkeypatch):

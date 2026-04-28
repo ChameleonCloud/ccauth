@@ -385,10 +385,34 @@ def _cmd_clouds_yaml(args) -> int:
 
 
 def _cmd_openrc(args) -> int:
-    sites = _build_sites(args)
-    if not sites:
-        return 1
-    if write_openrc_file(sites[0], Path(args.output), force=args.force):
+    if args.auth_url:
+        site = SiteConfig(
+            auth_url=args.auth_url,
+            region_name=args.region_name or "",
+            project_id=args.project_id or "",
+            identity_provider=args.identity_provider,
+            protocol=args.protocol,
+            cloud_name=args.cloud_name,
+            client_id=args.client_id,
+            discovery_endpoint=args.discovery_endpoint,
+        )
+    else:
+        vd_sites = from_vendordata(
+            metadata_url=args.metadata_url,
+            client_id=args.client_id,
+            discovery_endpoint=args.discovery_endpoint,
+        )
+        if not vd_sites:
+            logger.error(
+                "Could not determine current site. "
+                "Provide --auth-url or run on a Chameleon instance."
+            )
+            return 1
+        site = vd_sites[0]
+        if args.project_id:
+            site.project_id = args.project_id
+
+    if write_openrc_file(site, Path(args.output), force=args.force):
         logger.info("Wrote openrc to %s (current site only).", args.output)
         logger.info("Source this file to set credentials. For multi-site, use 'ccauth clouds-yaml'.")
     return 0
