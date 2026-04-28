@@ -1,10 +1,11 @@
 """CLI entrypoint for ccauth.
 
 Subcommands:
-  login       — Authenticate via OIDC device flow
-  logout      — Clear cached refresh tokens
-  clouds-yaml — Write a clouds.yaml file
-  openrc      — Write an openrc file
+  login           — Authenticate via OIDC device flow
+  logout          — Clear cached refresh tokens
+  clouds-yaml     — Write a clouds.yaml file for all sites
+  openrc          — Write an openrc file for the current site only
+  discover-clouds — Interactive project picker and clouds.yaml generator
 """
 
 from __future__ import annotations
@@ -168,24 +169,23 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
             logger.debug("Project '%s' not found at %s", project_name, site.region_name)
 
 
-def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
-    """Return one SiteConfig per (site, project) pair across all sites."""
+def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
+    """Return {project_name: [SiteConfig, ...]} for every project at every site.
+
+    SiteConfigs have project_id set and cloud_name left as the site name —
+    callers are responsible for setting final cloud_name values.
+    """
     if not REFRESH_TOKEN_CACHE.expanduser().exists():
         logger.error("No cached token. Run 'ccauth login' first.")
-        return []
+        return {}
 
-    result = []
+    result: dict[str, list[SiteConfig]] = {}
     for site in sites:
-        projects = _list_projects_at(site)
-        if not projects:
-            logger.debug("No projects found at %s; skipping.", site.region_name)
-            continue
-        for project in projects:
-            slug = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project['name']}".lower()).strip("_")
-            result.append(SiteConfig(
+        for project in _list_projects_at(site):
+            result.setdefault(project["name"], []).append(SiteConfig(
                 auth_url=site.auth_url,
                 region_name=site.region_name,
-                cloud_name=slug,
+                cloud_name=site.cloud_name,
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=project["id"],
@@ -193,6 +193,104 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
                 protocol=site.protocol,
             ))
     return result
+
+
+def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
+    """Return one SiteConfig per (site, project) pair with slugged cloud names."""
+    by_project = _discover_projects(sites)
+    if not by_project:
+        return []
+    result = []
+    for project_name, project_sites in by_project.items():
+        for site in project_sites:
+            slug = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project_name}".lower()).strip("_")
+            result.append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=slug,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=site.project_id,
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+    return result
+
+
+def _cmd_discover_clouds(args) -> int:
+    """Interactive helper: discover projects and generate clouds.yaml."""
+    if not REFRESH_TOKEN_CACHE.expanduser().exists():
+        logger.error("Not logged in. Run 'ccauth login' first.")
+        return 1
+
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+
+    logger.info("Discovering projects across all sites...")
+    by_project = _discover_projects(sites)
+    if not by_project:
+        logger.error("No projects found.")
+        return 1
+
+    project_names = sorted(by_project)
+    print("\nAvailable projects:")
+    for i, name in enumerate(project_names, 1):
+        site_names = ", ".join(s.cloud_name for s in by_project[name])
+        print(f"  {i}. {name}  [{site_names}]")
+
+    print("\nEnter number(s) to include (e.g. '1', '1 2'), or 'all': ", end="", flush=True)
+    try:
+        raw = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+
+    if raw.lower() == "all":
+        selected = project_names
+    else:
+        selected = []
+        for token in raw.split():
+            try:
+                idx = int(token) - 1
+                if 0 <= idx < len(project_names):
+                    selected.append(project_names[idx])
+                else:
+                    logger.error("Invalid selection: %s", token)
+                    return 1
+            except ValueError:
+                logger.error("Invalid input: %s", token)
+                return 1
+
+    if not selected:
+        logger.error("No projects selected.")
+        return 1
+
+    # Single project: use bare site name; multiple: slug site_project
+    multi = len(selected) > 1
+    output_sites = []
+    for project_name in selected:
+        for site in by_project[project_name]:
+            if multi:
+                cloud_name = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project_name}".lower()).strip("_")
+            else:
+                cloud_name = site.cloud_name
+            output_sites.append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=cloud_name,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=site.project_id,
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+
+    output_path = Path(args.output).expanduser()
+    if write_clouds_yaml(output_sites, output_path, force=args.force):
+        logger.info("Wrote %d cloud entr%s to %s", len(output_sites), "y" if len(output_sites) == 1 else "ies", output_path)
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
+    return 0
 
 
 def _trigger_auth(site: SiteConfig) -> None:
@@ -447,9 +545,17 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
     clouds_p.add_argument(
         "--all-projects",
         action="store_true",
-        default=False,
         help="Generate an entry for every project at every site, named <site>_<project>.",
     )
+
+    discover_p = sub.add_parser("discover-clouds", help="Interactive project picker and clouds.yaml generator")
+    _add_site_args(discover_p)
+    discover_p.add_argument(
+        "--output",
+        default="~/.config/openstack/clouds.yaml",
+        help="Output file path (default: %(default)s)",
+    )
+    discover_p.add_argument("--force", action="store_true", help="Overwrite existing entries")
 
     openrc_p = sub.add_parser(
         "openrc",
@@ -508,6 +614,7 @@ def main(argv=None, use_cc_login_compat=False) -> int:
         "logout": _cmd_logout,
         "clouds-yaml": _cmd_clouds_yaml,
         "openrc": _cmd_openrc,
+        "discover-clouds": _cmd_discover_clouds,
     }
     return commands[args.command](args)
 
