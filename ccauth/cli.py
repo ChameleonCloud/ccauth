@@ -131,7 +131,7 @@ def _list_projects_at(site: SiteConfig) -> list[dict]:
     try:
         url = _base_url(site.auth_url) + "/v3/auth/projects"
         return sess.get(url, authenticated=True).json().get("projects", [])
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("Could not list projects at %s: %s", site.auth_url, exc)
         return []
 
@@ -217,6 +217,54 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
     return result
 
 
+def _parse_selection(raw: str, project_names: list[str]) -> list[str] | None:
+    """Parse user input into a list of selected project names, or None on error."""
+    if raw.lower() == "all":
+        return list(project_names)
+    selected = []
+    for token in raw.split():
+        try:
+            idx = int(token) - 1
+        except ValueError:
+            logger.error("Invalid input: %s", token)
+            return None
+        if 0 <= idx < len(project_names):
+            selected.append(project_names[idx])
+        else:
+            logger.error("Invalid selection: %s", token)
+            return None
+    if not selected:
+        logger.error("No projects selected.")
+        return None
+    return selected
+
+
+def _build_output_sites(
+    selected: list[str], by_project: dict[str, list[SiteConfig]]
+) -> list[SiteConfig]:
+    """Build the final SiteConfig list for writing, with appropriate cloud names."""
+    multi = len(selected) > 1
+    result = []
+    for project_name in selected:
+        for site in by_project[project_name]:
+            if multi:
+                slug = f"{site.cloud_name}_{project_name}".lower()
+                cloud_name = re.sub(r"[^a-z0-9]+", "_", slug).strip("_")
+            else:
+                cloud_name = site.cloud_name
+            result.append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=cloud_name,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=site.project_id,
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+    return result
+
+
 def _cmd_discover_clouds(args) -> int:
     """Interactive helper: discover projects and generate clouds.yaml."""
     if not REFRESH_TOKEN_CACHE.expanduser().exists():
@@ -246,49 +294,15 @@ def _cmd_discover_clouds(args) -> int:
         print()
         return 1
 
-    if raw.lower() == "all":
-        selected = project_names
-    else:
-        selected = []
-        for token in raw.split():
-            try:
-                idx = int(token) - 1
-                if 0 <= idx < len(project_names):
-                    selected.append(project_names[idx])
-                else:
-                    logger.error("Invalid selection: %s", token)
-                    return 1
-            except ValueError:
-                logger.error("Invalid input: %s", token)
-                return 1
-
-    if not selected:
-        logger.error("No projects selected.")
+    selected = _parse_selection(raw, project_names)
+    if selected is None:
         return 1
 
-    # Single project: use bare site name; multiple: slug site_project
-    multi = len(selected) > 1
-    output_sites = []
-    for project_name in selected:
-        for site in by_project[project_name]:
-            if multi:
-                cloud_name = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project_name}".lower()).strip("_")
-            else:
-                cloud_name = site.cloud_name
-            output_sites.append(SiteConfig(
-                auth_url=site.auth_url,
-                region_name=site.region_name,
-                cloud_name=cloud_name,
-                client_id=site.client_id,
-                discovery_endpoint=site.discovery_endpoint,
-                project_id=site.project_id,
-                identity_provider=site.identity_provider,
-                protocol=site.protocol,
-            ))
-
+    output_sites = _build_output_sites(selected, by_project)
     output_path = Path(args.output).expanduser()
     if write_clouds_yaml(output_sites, output_path, force=args.force):
-        logger.info("Wrote %d cloud entr%s to %s", len(output_sites), "y" if len(output_sites) == 1 else "ies", output_path)
+        suffix = "y" if len(output_sites) == 1 else "ies"
+        logger.info("Wrote %d cloud entr%s to %s", len(output_sites), suffix, output_path)
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
     return 0
 
