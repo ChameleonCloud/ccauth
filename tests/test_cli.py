@@ -570,12 +570,12 @@ def test_cmd_openrc_writes_current_site(tmp_path, monkeypatch):
     assert f'OS_AUTH_URL="{TACC.auth_url}"' in content
 
 
-def test_cmd_discover_clouds_no_token_returns_error(tmp_path, monkeypatch):
+def test_cmd_discover_projects_no_token_returns_error(tmp_path, monkeypatch):
     monkeypatch.setattr("ccauth.cli.REFRESH_TOKEN_CACHE", tmp_path / "nonexistent.json")
-    assert main(["discover-clouds", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
 
 
-def test_cmd_discover_clouds_single_project_uses_bare_site_name(tmp_path, monkeypatch):
+def test_cmd_discover_projects_single_project_uses_bare_site_name(tmp_path, monkeypatch):
     kvm = _site("https://kvm.tacc.chameleoncloud.org:5000/v3", "KVM@TACC", "kvm", "p1")
     cache = tmp_path / "token.json"
     cache.write_text("{}")
@@ -585,12 +585,12 @@ def test_cmd_discover_clouds_single_project_uses_bare_site_name(tmp_path, monkey
     monkeypatch.setattr("builtins.input", lambda: "1")
 
     output = tmp_path / "clouds.yaml"
-    assert main(["discover-clouds", "--output", str(output)]) == 0
+    assert main(["discover-projects", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
     assert "kvm" in data["clouds"]
 
 
-def test_cmd_discover_clouds_multiple_projects_use_slugged_names(tmp_path, monkeypatch):
+def test_cmd_discover_projects_multiple_projects_use_slugged_names(tmp_path, monkeypatch):
     kvm  = _site("https://kvm.tacc.chameleoncloud.org:5000/v3", "KVM@TACC", "kvm",  "p1")
     tacc = _site("https://chi.tacc.chameleoncloud.org:5000/v3", "CHI@TACC", "tacc", "p2")
     cache = tmp_path / "token.json"
@@ -604,13 +604,13 @@ def test_cmd_discover_clouds_multiple_projects_use_slugged_names(tmp_path, monke
     monkeypatch.setattr("builtins.input", lambda: "all")
 
     output = tmp_path / "clouds.yaml"
-    assert main(["discover-clouds", "--output", str(output)]) == 0
+    assert main(["discover-projects", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
     assert "kvm_chi_240042"  in data["clouds"]
     assert "tacc_chi_240099" in data["clouds"]
 
 
-def test_cmd_discover_clouds_invalid_number_returns_error(tmp_path, monkeypatch):
+def test_cmd_discover_projects_invalid_number_returns_error(tmp_path, monkeypatch):
     cache = tmp_path / "token.json"
     cache.write_text("{}")
     monkeypatch.setattr("ccauth.cli.REFRESH_TOKEN_CACHE", cache)
@@ -618,10 +618,10 @@ def test_cmd_discover_clouds_invalid_number_returns_error(tmp_path, monkeypatch)
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
     monkeypatch.setattr("builtins.input", lambda: "99")
 
-    assert main(["discover-clouds", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
 
 
-def test_cmd_discover_clouds_non_numeric_returns_error(tmp_path, monkeypatch):
+def test_cmd_discover_projects_non_numeric_returns_error(tmp_path, monkeypatch):
     cache = tmp_path / "token.json"
     cache.write_text("{}")
     monkeypatch.setattr("ccauth.cli.REFRESH_TOKEN_CACHE", cache)
@@ -629,10 +629,10 @@ def test_cmd_discover_clouds_non_numeric_returns_error(tmp_path, monkeypatch):
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
     monkeypatch.setattr("builtins.input", lambda: "abc")
 
-    assert main(["discover-clouds", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
 
 
-def test_cmd_discover_clouds_keyboard_interrupt_returns_error(tmp_path, monkeypatch):
+def test_cmd_discover_projects_keyboard_interrupt_returns_error(tmp_path, monkeypatch):
     cache = tmp_path / "token.json"
     cache.write_text("{}")
     monkeypatch.setattr("ccauth.cli.REFRESH_TOKEN_CACHE", cache)
@@ -640,14 +640,14 @@ def test_cmd_discover_clouds_keyboard_interrupt_returns_error(tmp_path, monkeypa
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
     monkeypatch.setattr("builtins.input", MagicMock(side_effect=KeyboardInterrupt))
 
-    assert main(["discover-clouds", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
 
 
-def test_cmd_discover_clouds_no_projects_found(tmp_path, monkeypatch):
+def test_cmd_discover_projects_no_projects_found(tmp_path, monkeypatch):
     cache = tmp_path / "token.json"
     cache.write_text("{}")
     monkeypatch.setattr("ccauth.cli.REFRESH_TOKEN_CACHE", cache)
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {})
 
-    assert main(["discover-clouds", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1

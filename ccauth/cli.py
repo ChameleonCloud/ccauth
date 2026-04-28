@@ -5,7 +5,7 @@ Subcommands:
   logout          — Clear cached refresh tokens
   clouds-yaml     — Write a clouds.yaml file for all sites
   openrc          — Write an openrc file for the current site only
-  discover-clouds — Interactive project picker and clouds.yaml generator
+  discover-projects — Interactive project picker and clouds.yaml generator
 """
 
 from __future__ import annotations
@@ -265,8 +265,8 @@ def _build_output_sites(
     return result
 
 
-def _cmd_discover_clouds(args) -> int:
-    """Interactive helper: discover projects and generate clouds.yaml."""
+def _cmd_discover_projects(args) -> int:
+    """Interactive project picker: discover available projects and write a clouds.yaml."""
     if not REFRESH_TOKEN_CACHE.expanduser().exists():
         logger.error("Not logged in. Run 'ccauth login' first.")
         return 1
@@ -562,7 +562,7 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         help="Generate an entry for every project at every site, named <site>_<project>.",
     )
 
-    discover_p = sub.add_parser("discover-clouds", help="Interactively discover projects to select for writing a clouds.yaml file")
+    discover_p = sub.add_parser("discover-projects", help="Interactively discover projects to select for writing a clouds.yaml file")
     _add_site_args(discover_p)
     discover_p.add_argument(
         "--output",
@@ -628,7 +628,7 @@ def main(argv=None, use_cc_login_compat=False) -> int:
         "logout": _cmd_logout,
         "clouds-yaml": _cmd_clouds_yaml,
         "openrc": _cmd_openrc,
-        "discover-clouds": _cmd_discover_clouds,
+        "discover-projects": _cmd_discover_projects,
     }
     return commands[args.command](args)
 
