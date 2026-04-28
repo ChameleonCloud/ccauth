@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -167,6 +168,33 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
             logger.debug("Project '%s' not found at %s", project_name, site.region_name)
 
 
+def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
+    """Return one SiteConfig per (site, project) pair across all sites."""
+    if not REFRESH_TOKEN_CACHE.expanduser().exists():
+        logger.error("No cached token. Run 'ccauth login' first.")
+        return []
+
+    result = []
+    for site in sites:
+        projects = _list_projects_at(site)
+        if not projects:
+            logger.debug("No projects found at %s; skipping.", site.region_name)
+            continue
+        for project in projects:
+            slug = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project['name']}".lower()).strip("_")
+            result.append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=slug,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=project["id"],
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+    return result
+
+
 def _trigger_auth(site: SiteConfig) -> None:
     plugin = ChameleonDeviceAuth(
         auth_url=site.auth_url,
@@ -232,7 +260,12 @@ def _cmd_clouds_yaml(args) -> int:
     sites = _build_sites(args)
     if not sites:
         return 1
-    _enrich_project_ids(sites)
+    if args.all_projects:
+        sites = _collect_all_projects(sites)
+        if not sites:
+            return 1
+    else:
+        _enrich_project_ids(sites)
     if write_clouds_yaml(sites, Path(args.output), force=args.force):
         logger.info("Wrote clouds.yaml to %s", args.output)
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
@@ -410,6 +443,12 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help="Overwrite existing entries",
+    )
+    clouds_p.add_argument(
+        "--all-projects",
+        action="store_true",
+        default=False,
+        help="Generate an entry for every project at every site, named <site>_<project>.",
     )
 
     openrc_p = sub.add_parser(
