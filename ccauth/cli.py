@@ -548,7 +548,7 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
 
     sub.add_parser("logout", help="Clear cached refresh tokens")
 
-    clouds_p = sub.add_parser("clouds-yaml", help="Write a clouds.yaml file")
+    clouds_p = sub.add_parser("clouds-yaml", help="Write a clouds.yaml file for the current project and all sites")
     _add_site_args(clouds_p)
     clouds_p.add_argument("--output", required=True, help="Output file path")
     clouds_p.add_argument(
@@ -562,7 +562,7 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         help="Generate an entry for every project at every site, named <site>_<project>.",
     )
 
-    discover_p = sub.add_parser("discover-clouds", help="Interactive project picker and clouds.yaml generator")
+    discover_p = sub.add_parser("discover-clouds", help="Interactively discover projects to select for writing a clouds.yaml file")
     _add_site_args(discover_p)
     discover_p.add_argument(
         "--output",
