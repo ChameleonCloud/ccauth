@@ -244,8 +244,8 @@ def _cmd_openrc(args) -> int:
     if not sites:
         return 1
     if write_openrc_file(sites[0], Path(args.output), force=args.force):
-        logger.info("Wrote openrc to %s", args.output)
-        logger.info("Source this file to set up OpenStack credentials in your environment.")
+        logger.info("Wrote openrc to %s (current site only).", args.output)
+        logger.info("Source this file to set credentials. For multi-site, use 'ccauth clouds-yaml'.")
     return 0
 
 
@@ -412,13 +412,22 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         help="Overwrite existing entries",
     )
 
-    openrc_p = sub.add_parser("openrc", help="Write an openrc file")
+    openrc_p = sub.add_parser(
+        "openrc",
+        help="Write an openrc file for the current site only",
+        description=(
+            "Write a bash-sourceable openrc file for a single site. "
+            "Unlike clouds-yaml, openrc only supports one site at a time. "
+            "Run this on each site you want credentials for, or use "
+            "clouds-yaml to configure all sites at once."
+        ),
+    )
     _add_site_args(openrc_p)
-    openrc_p.add_argument("--output", required=True, help="Output file path")
+    openrc_p.add_argument("--output", required=True, help="Output file path (single site only)")
     openrc_p.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing entries",
+        help="Overwrite existing file",
     )
 
 
