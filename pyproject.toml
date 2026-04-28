@@ -25,3 +25,6 @@ max-line-length = 120
 
 [project.scripts]
 cc-login = "ccauth.cli:main"
+
+[project.entry-points."keystoneauth1.plugin"]
+v3chameleonoidc = "ccauth.loader:ChameleonDeviceAuthLoader"
