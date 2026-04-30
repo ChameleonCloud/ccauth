@@ -25,12 +25,12 @@ from .appcred import (
     write_openrc as _write_openrc_appcred,            # v3applicationcredential (cc-login)
 )
 from .config import SiteConfig
+from ._urlutils import auth_url_base
 from .discover import (
     DEFAULT_CLIENT_ID,
     DEFAULT_DISCOVERY_ENDPOINT,
     SITES_API_URL,
     VENDORDATA_URL,
-    base_url,
     from_reference_api,
     from_vendordata,
     list_projects_at,
@@ -47,7 +47,7 @@ def _current_site(sites: list[SiteConfig], region_name: str, vd_sites: list[Site
         return next((s for s in sites if s.region_name == region_name), None)
     if vd_sites:
         return next(
-            (s for s in sites if base_url(s.auth_url) == base_url(vd_sites[0].auth_url)),
+            (s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd_sites[0].auth_url)),
             None,
         )
     return None
@@ -83,7 +83,7 @@ def _build_sites(args) -> list[SiteConfig] | None:
     # If absent (KVM, edge, etc.), append it.
     if vd_sites:
         vd = vd_sites[0]
-        match = next((s for s in sites if base_url(s.auth_url) == base_url(vd.auth_url)), None)
+        match = next((s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd.auth_url)), None)
         if match is None:
             sites.append(vd)
         elif match.cloud_name == "chameleon" and vd.cloud_name != "chameleon":
@@ -97,16 +97,12 @@ def _build_sites(args) -> list[SiteConfig] | None:
         return None
 
     # Apply project_id to the current site so _enrich_project_ids can use it
-    # as a seed to discover the matching ID at every other site.
-    # If no current site can be identified, apply it to all sites.
+    # as a seed to discover the matching ID at every other site by project name.
+    # If no current site can be identified, seed the first site as a fallback.
     project_id = args.project_id or (vd_sites[0].project_id if vd_sites else "")
     if project_id:
         current = _current_site(sites, args.region_name, vd_sites)
-        if current:
-            current.project_id = project_id
-        else:
-            for site in sites:
-                site.project_id = project_id
+        (current or sites[0]).project_id = project_id
 
     return sites
 
@@ -137,6 +133,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
 
     current = next((s for s in sites if s.project_id), None)
     if not current:
+        logger.debug("No project ID seed; pass --project-id or run 'ccauth discover-projects'")
         return
 
     all_projects = _list_projects_at(current)
@@ -319,7 +316,7 @@ def _cmd_login(args) -> int:
     sites = _build_sites(args)
     if not sites:
         return 1
-    vd_sites = [] if args.region_name else from_vendordata(metadata_url=args.metadata_url)
+    vd_sites = [] if (args.region_name or args.auth_url) else from_vendordata(metadata_url=args.metadata_url)
     login_site = _current_site(sites, args.region_name, vd_sites) or sites[0]
     try:
         _trigger_auth(login_site)
@@ -361,6 +358,20 @@ def _cmd_clouds_yaml(args) -> int:
             return 1
     else:
         _enrich_project_ids(sites)
+    missing = [s for s in sites if not s.project_id]
+    if missing:
+        names = ", ".join(s.region_name or s.auth_url for s in missing)
+        if REFRESH_TOKEN_CACHE.expanduser().exists():
+            logger.error(
+                "No project ID for: %s. Pass --project-id or run 'ccauth discover-projects'.",
+                names,
+            )
+        else:
+            logger.error(
+                "No project ID for: %s. Run 'ccauth login' first.",
+                names,
+            )
+        return 1
     if write_clouds_yaml(sites, Path(args.output), force=args.force):
         logger.info("Wrote clouds.yaml to %s", args.output)
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")

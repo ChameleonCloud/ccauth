@@ -199,11 +199,11 @@ def test_appcred_cache_corrupt(tmp_path):
 
 
 def test_v3_base_appends_v3_when_missing():
-    from ccauth.appcred import _v3_base
-    assert _v3_base("https://chi.uc.chameleoncloud.org:5000") == "https://chi.uc.chameleoncloud.org:5000/v3"
-    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/") == "https://chi.uc.chameleoncloud.org:5000/v3"
-    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/v3") == "https://chi.uc.chameleoncloud.org:5000/v3"
-    assert _v3_base("https://chi.uc.chameleoncloud.org:5000/v3/") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    from ccauth._urlutils import auth_url_v3
+    assert auth_url_v3("https://chi.uc.chameleoncloud.org:5000") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert auth_url_v3("https://chi.uc.chameleoncloud.org:5000/") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert auth_url_v3("https://chi.uc.chameleoncloud.org:5000/v3") == "https://chi.uc.chameleoncloud.org:5000/v3"
+    assert auth_url_v3("https://chi.uc.chameleoncloud.org:5000/v3/") == "https://chi.uc.chameleoncloud.org:5000/v3"
 
 
 def test_create_app_cred_uses_v3_url(tmp_path, monkeypatch):

@@ -2,6 +2,7 @@ import json
 from io import BytesIO
 
 from ccauth import discover
+from ccauth import _urlutils as urlutils
 
 
 def test_from_reference_api_parses_response(monkeypatch):
@@ -70,10 +71,10 @@ def test_from_reference_api_handles_unreachable(monkeypatch):
 
 
 def test_base_url_strips_v3():
-    assert discover.base_url("https://x:5000/v3") == "https://x:5000"
-    assert discover.base_url("https://x:5000/v3/") == "https://x:5000"
-    assert discover.base_url("https://x:5000/") == "https://x:5000"
-    assert discover.base_url("https://x:5000") == "https://x:5000"
+    assert urlutils.auth_url_base("https://x:5000/v3") == "https://x:5000"
+    assert urlutils.auth_url_base("https://x:5000/v3/") == "https://x:5000"
+    assert urlutils.auth_url_base("https://x:5000/") == "https://x:5000"
+    assert urlutils.auth_url_base("https://x:5000") == "https://x:5000"
 
 
 def test_list_projects_at_calls_keystone():

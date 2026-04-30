@@ -2,10 +2,11 @@
 
 OpenStack Chameleon device-flow authentication helper with application-credential caching.
 
-Two interfaces are provided:
+In most cases, we recommend the `ccauth`-based flow, as it is both more convenient and more secure. In some cases, such as noninteractive or ephemeral workflows, the application credential-based flow may be more suitable, so we provide both below.
 
-- **`ccauth`** — authenticate once, generate `clouds.yaml`/`openrc` files that use the `v3chameleonoidc` keystoneauth1 plugin. Refresh tokens are cached locally so all subsequent OpenStack commands work silently. **`ccauth` must be installed on every machine that uses the generated files (and in the correct virtual environment for OpenStack clients being used, if applicable).**
-- **`cc-login`** — authenticate once, create a short-lived OpenStack **application credential**, and write portable `openrc`/`clouds.yaml` files that work with any OpenStack client without `ccauth` installed for the OpenStack commands in use.
+**`ccauth`** is the most convenient option for interactive use. It caches and refreshes credentials automatically, and allows you to authenticate from the CLI by opening a link in your browser. It works with all OpenStack CLI or API commands that understand a `clouds.yaml` file. Because this implements a keystoneauth1 plugin, `ccauth` must be installed in the same Python environment as the OpenStack clients using it.
+
+**`cc-login`** is an alternate method using OpenStack application credentials. This is useful to generate portable `openrc`/`clouds.yaml` credential files that will work even if `ccauth` is not installed. Note: because these credentials are used to create more credentials, they are unrestricted — if leaked, they could be used to create non-expiring credentials as your user.
 
 ## Installation
 
@@ -20,10 +21,8 @@ pip install ccauth
 ### Quick start
 
 ```bash
-# Authenticate
-ccauth login
-
-# Generate clouds.yaml for the current project and all discovered sites
+# Generate clouds.yaml for the current project and all discovered sites.
+# On first run you'll be prompted to visit a URL to authenticate.
 ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
 
 # Use a specific cloud (which can be found by name in clouds.yaml)
@@ -31,13 +30,13 @@ export OS_CLOUD=chameleon
 openstack server list
 ```
 
-On first run you'll be prompted to visit a URL. Subsequent runs reuse the cached refresh token silently.
+Subsequent runs reuse the cached refresh token silently. `ccauth login` is available as a convenience to pre-authenticate or verify credentials, but it is not a required first step — `clouds-yaml` and `discover-projects` will trigger the login flow automatically if no cached token is present.
 
 ### Subcommands
 
 #### `ccauth login`
 
-Runs the OIDC device flow and caches a refresh token. Discovers the current site from the OpenStack metadata service when on a Chameleon instance.
+Optional. Runs the OIDC device flow and caches a refresh token. Useful for pre-authenticating or verifying credentials before running other commands. Discovers the current site from the OpenStack metadata service when on a Chameleon instance.
 
 ```bash
 ccauth login

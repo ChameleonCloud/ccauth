@@ -18,11 +18,11 @@ from ccauth.cli import (
     main,
 )
 from ccauth.config import SiteConfig
+from ccauth._urlutils import auth_url_base as base_url
 from ccauth.discover import (
     DEFAULT_CLIENT_ID,
     DEFAULT_DISCOVERY_ENDPOINT,
     SITES_API_URL,
-    base_url,
     list_projects_at,
     VENDORDATA_URL,
     from_vendordata,
@@ -73,10 +73,6 @@ def test_base_url_strips_trailing_slash():
 
 def test_base_url_strips_v3_and_trailing_slash():
     assert base_url("https://example.com:5000/v3/") == "https://example.com:5000"
-
-def test_base_url_no_change_needed():
-    assert base_url("https://example.com:5000") == "https://example.com:5000"
-
 
 
 def test_build_sites_explicit_auth_url():
@@ -184,11 +180,12 @@ def test_build_sites_explicit_project_id_overrides_vendordata(monkeypatch):
     assert tacc.project_id == "explicit-proj"
 
 
-def test_build_sites_explicit_project_id_no_vendordata_applies_to_all(monkeypatch):
+def test_build_sites_explicit_project_id_no_vendordata_seeds_first_site(monkeypatch):
     monkeypatch.setattr("ccauth.cli.from_reference_api", _fresh_ref("tacc", "uc"))
     monkeypatch.setattr("ccauth.cli.from_vendordata", lambda **_: [])
-    sites = _build_sites(_args(project_id="all-proj"))
-    assert all(s.project_id == "all-proj" for s in sites)
+    sites = _build_sites(_args(project_id="seed-proj"))
+    assert sites[0].project_id == "seed-proj"
+    assert all(s.project_id == "" for s in sites[1:])
 
 
 
@@ -417,6 +414,7 @@ def test_collect_all_projects_one_entry_per_site_project_pair(tmp_path, monkeypa
 
 def _mock_vendordata(monkeypatch, data: dict):
     import ccauth.discover as discover_mod
+    monkeypatch.setattr(discover_mod, "_metadata_reachable", lambda: True)
     mock_resp = MagicMock()
     mock_resp.read.return_value = json.dumps(data).encode()
     mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -530,7 +528,9 @@ def test_cmd_logout_no_token_is_ok(tmp_path, monkeypatch):
 
 
 def test_cmd_clouds_yaml_writes_all_sites(tmp_path, monkeypatch):
-    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC, UC])
+    from dataclasses import replace
+    sites = [replace(TACC, project_id="proj-tacc"), replace(UC, project_id="proj-uc")]
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: sites)
     monkeypatch.setattr("ccauth.cli._enrich_project_ids", lambda sites: None)
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0

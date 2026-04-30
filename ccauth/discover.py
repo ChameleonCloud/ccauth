@@ -6,8 +6,10 @@ OpenStack metadata service (vendordata).
 
 import json
 import logging
+import socket
 import urllib.request
 
+from ._urlutils import auth_url_base
 from .config import SiteConfig
 
 logger = logging.getLogger(__name__)
@@ -20,11 +22,6 @@ DEFAULT_DISCOVERY_ENDPOINT = (
     "https://auth.chameleoncloud.org/auth/realms/chameleon"
     "/.well-known/openid-configuration"
 )
-
-
-def base_url(url: str) -> str:
-    """Strip trailing /v3 and slashes from an auth URL."""
-    return url.rstrip("/").removesuffix("/v3").rstrip("/")
 
 
 def from_reference_api(api_url=SITES_API_URL):
@@ -58,12 +55,22 @@ def from_reference_api(api_url=SITES_API_URL):
     return sites
 
 
+def _metadata_reachable(host="169.254.169.254", port=80, timeout=1) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def from_vendordata(metadata_url=VENDORDATA_URL):
     """Fetch site config from the OpenStack metadata service.
 
     Only works when running on a Chameleon instance. Returns a list
     with one SiteConfig, or an empty list on failure.
     """
+    if not _metadata_reachable():
+        return []
     try:
         with urllib.request.urlopen(metadata_url, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -103,5 +110,5 @@ def list_projects_at(session) -> list[dict]:
     Caller supplies an unscoped keystoneauth Session. Returns the raw
     project dicts from Keystone.
     """
-    url = base_url(session.auth.auth_url) + "/v3/auth/projects"
+    url = auth_url_base(session.auth.auth_url) + "/v3/auth/projects"
     return session.get(url, authenticated=True).json().get("projects", [])
