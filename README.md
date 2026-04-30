@@ -21,7 +21,7 @@ pip install ccauth
 ### Quick start
 
 ```bash
-# Generate clouds.yaml for the current project and all discovered sites.
+# Generate clouds.yaml for the current site and project.
 # On first run you'll be prompted to visit a URL to authenticate.
 ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
 
@@ -30,7 +30,7 @@ export OS_CLOUD=chameleon
 openstack server list
 ```
 
-Subsequent runs reuse the cached refresh token silently. `ccauth login` is available as a convenience to pre-authenticate or verify credentials, but it is not a required first step — `clouds-yaml` and `discover-projects` will trigger the login flow automatically if no cached token is present.
+Subsequent runs reuse the cached refresh token silently. `ccauth login` is available as a convenience to pre-authenticate or verify credentials, but it is not a required first step — `clouds-yaml` and `discover-projects` will trigger the device flow automatically if no cached token is present.
 
 ### Subcommands
 
@@ -54,15 +54,26 @@ ccauth logout
 
 #### `ccauth clouds-yaml`
 
-Writes a `clouds.yaml` entry for every discovered site. Run `ccauth login` first.
+Writes a `clouds.yaml` file. By default, generates a single entry for the current site and project (discovered from the OpenStack metadata service). Use `--all-sites` to cover all Chameleon sites.
 
 ```bash
+# Current site + current project (default)
 ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
-ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --force
+
+# All sites + current project, one entry per site
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-sites
+
+# Current site + all projects, one entry per project
 ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-projects
+
+# All sites + all projects
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-sites --all-projects
+
+# Overwrite existing entries
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --force
 ```
 
-`--all-projects` generates one entry per (site, project) pair, named `<site>_<project>`.
+`--all-projects` generates one entry per (site, project) pair, named `<site>_<project>`. `--no-vendordata` skips the metadata service lookup; requires `--auth-url` or `--all-sites`.
 
 #### `ccauth openrc`
 
@@ -76,7 +87,7 @@ ccauth openrc --output ~/openrc --force
 
 #### `ccauth discover-projects`
 
-Interactively lists all projects you have access to across all sites and writes a `clouds.yaml` for the ones you choose in the format site_project (hyphens are converted to underscores).
+Interactively lists all projects you have access to across all sites and writes a `clouds.yaml` for the ones you choose, named `<site>_<project>`. Triggers the device flow automatically if no cached token is present.
 
 ```bash
 ccauth discover-projects
@@ -101,15 +112,11 @@ clouds:
 
 ### Site discovery
 
-When `--auth-url` is not provided, all available sites come from the Chameleon
-reference API (`https://api.chameleoncloud.org/sites`). If running on a Chameleon
-instance, the OpenStack metadata service at `169.254.169.254` may add the current
-site to the list if it isn't already there (e.g. KVM or edge nodes).
+Without `--auth-url`, the **current site** comes from the OpenStack metadata service at `169.254.169.254` (vendordata). This works automatically when running on a Chameleon instance. The metadata service is probed with a fast TCP check first; if unreachable (e.g. on a laptop), it is skipped immediately with no timeout.
 
-The **current site** (used for `login` and `openrc`) is chosen in order:
-1. `--region-name` if provided — matched against the site list
-2. Vendordata — the site reported by the metadata service
-3. First site in the list
+`--all-sites` fetches all available sites from the Chameleon reference API (`https://api.chameleoncloud.org/sites`) and merges in the current site from vendordata when available (e.g. to pick up the correct cloud name for KVM or edge nodes).
+
+Use `--no-vendordata` to skip the metadata service entirely; requires `--auth-url` or `--all-sites`.
 
 Override the discovery endpoints with `--sites-api-url` and `--metadata-url`.
 
@@ -125,6 +132,7 @@ Override the discovery endpoints with `--sites-api-url` and `--metadata-url`.
 | `--cloud-name NAME` | `chameleon` | Cloud name in clouds.yaml |
 | `--sites-api-url URL` | Chameleon reference API | Reference API URL |
 | `--metadata-url URL` | `169.254.169.254/...` | Vendordata metadata URL |
+| `--no-vendordata` | false | Skip metadata service lookup (requires `--auth-url` or `--all-sites`) |
 | `--debug` | false | Enable debug logging |
 
 ### Environment variables

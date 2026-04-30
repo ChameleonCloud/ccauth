@@ -1,9 +1,9 @@
 """CLI entrypoint for ccauth.
 
 Subcommands:
-  login             — Authenticate via OIDC device flow
+  login             — Authenticate via OIDC device flow (optional; other commands auto-prompt)
   logout            — Clear cached refresh tokens
-  clouds-yaml       — Write a clouds.yaml file for all sites
+  clouds-yaml       — Write a clouds.yaml file (current site by default, --all-sites for all)
   openrc            — Write an openrc file for the current site only
   discover-projects — Interactive project picker and clouds.yaml generator
 """
@@ -69,32 +69,49 @@ def _build_sites(args) -> list[SiteConfig] | None:
             )
         ]
 
-    # Collect sites from both sources independently.
-    # Reference API sites carry no auth config; stamp it in from args.
-    sites = from_reference_api(api_url=args.sites_api_url)
-    for site in sites:
-        site.client_id = args.client_id
-        site.discovery_endpoint = args.discovery_endpoint
+    no_vendordata = getattr(args, "no_vendordata", False)
 
-    vd_sites = from_vendordata(metadata_url=args.metadata_url)
+    if getattr(args, "all_sites", False):
+        # Multi-site: reference API + optional vendordata merge.
+        # Reference API sites carry no auth config; stamp it in from args.
+        sites = from_reference_api(api_url=args.sites_api_url)
+        for site in sites:
+            site.client_id = args.client_id
+            site.discovery_endpoint = args.discovery_endpoint
 
-    # Merge vendordata site. If the site already exists in the reference API,
-    # keep one entry and prefer whichever cloud_name isn't "chameleon".
-    # If absent (KVM, edge, etc.), append it.
-    if vd_sites:
-        vd = vd_sites[0]
-        match = next((s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd.auth_url)), None)
-        if match is None:
-            sites.append(vd)
-        elif match.cloud_name == "chameleon" and vd.cloud_name != "chameleon":
-            match.cloud_name = vd.cloud_name
+        vd_sites = [] if no_vendordata else from_vendordata(metadata_url=args.metadata_url)
 
-    if not sites:
-        logger.error(
-            "No site config found. Provide --auth-url or ensure the "
-            "reference API or vendordata is accessible."
-        )
-        return None
+        # Merge vendordata site. If the site already exists in the reference API,
+        # keep one entry and prefer whichever cloud_name isn't "chameleon".
+        # If absent (KVM, edge, etc.), append it.
+        if vd_sites:
+            vd = vd_sites[0]
+            match = next((s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd.auth_url)), None)
+            if match is None:
+                sites.append(vd)
+            elif match.cloud_name == "chameleon" and vd.cloud_name != "chameleon":
+                match.cloud_name = vd.cloud_name
+
+        if not sites:
+            logger.error(
+                "No site config found. Provide --auth-url or ensure the reference API is accessible."
+            )
+            return None
+    else:
+        # Default: current site from vendordata only.
+        if no_vendordata:
+            logger.error("--no-vendordata requires --auth-url or --all-sites.")
+            return None
+
+        vd_sites = from_vendordata(metadata_url=args.metadata_url)
+        if not vd_sites:
+            logger.error(
+                "Could not determine current site. "
+                "Pass --auth-url or use --all-sites to discover from the reference API."
+            )
+            return None
+
+        sites = list(vd_sites)
 
     # Apply project_id to the current site so _enrich_project_ids can use it
     # as a seed to discover the matching ID at every other site by project name.
@@ -127,10 +144,6 @@ def _list_projects_at(site: SiteConfig) -> list[dict]:
 
 def _enrich_project_ids(sites: list[SiteConfig]) -> None:
     """Discover project_id at each site by matching the current site's project name."""
-    if not REFRESH_TOKEN_CACHE.expanduser().exists():
-        logger.debug("No cached token; skipping project ID discovery.")
-        return
-
     current = next((s for s in sites if s.project_id), None)
     if not current:
         logger.debug("No project ID seed; pass --project-id or run 'ccauth discover-projects'")
@@ -165,10 +178,6 @@ def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
     SiteConfigs have project_id set and cloud_name left as the site name —
     callers are responsible for setting final cloud_name values.
     """
-    if not REFRESH_TOKEN_CACHE.expanduser().exists():
-        logger.error("No cached token. Run 'ccauth login' first.")
-        return {}
-
     result: dict[str, list[SiteConfig]] = {}
     for site in sites:
         for project in _list_projects_at(site):
@@ -257,10 +266,6 @@ def _build_output_sites(
 
 def _cmd_discover_projects(args) -> int:
     """Interactive project picker: discover available projects and write a clouds.yaml."""
-    if not REFRESH_TOKEN_CACHE.expanduser().exists():
-        logger.error("Not logged in. Run 'ccauth login' first.")
-        return 1
-
     sites = _build_sites(args)
     if not sites:
         return 1
@@ -316,8 +321,7 @@ def _cmd_login(args) -> int:
     sites = _build_sites(args)
     if not sites:
         return 1
-    vd_sites = [] if (args.region_name or args.auth_url) else from_vendordata(metadata_url=args.metadata_url)
-    login_site = _current_site(sites, args.region_name, vd_sites) or sites[0]
+    login_site = sites[0]
     try:
         _trigger_auth(login_site)
     except KeyboardInterrupt:
@@ -353,17 +357,23 @@ def _cmd_clouds_yaml(args) -> int:
     if not sites:
         return 1
     if args.all_projects:
+        # --all-projects (with or without --all-sites): one entry per (site, project)
         sites = _collect_all_projects(sites)
         if not sites:
             return 1
-    else:
+    elif getattr(args, "all_sites", False):
+        # --all-sites only: enrich project IDs across sites by project name
         _enrich_project_ids(sites)
+    else:
+        # default (single site): use --cloud-name (default: "chameleon") regardless of vendordata
+        sites[0].cloud_name = args.cloud_name
     missing = [s for s in sites if not s.project_id]
     if missing:
         names = ", ".join(s.region_name or s.auth_url for s in missing)
         if REFRESH_TOKEN_CACHE.expanduser().exists():
             logger.error(
-                "No project ID for: %s. Pass --project-id or run 'ccauth discover-projects'.",
+                "No project ID for: %s. Pass --project-id, use --all-projects, "
+                "or run 'ccauth discover-projects'.",
                 names,
             )
         else:
@@ -392,6 +402,9 @@ def _cmd_openrc(args) -> int:
             discovery_endpoint=args.discovery_endpoint,
         )
     else:
+        if getattr(args, "no_vendordata", False):
+            logger.error("--no-vendordata requires --auth-url for openrc.")
+            return 1
         vd_sites = from_vendordata(metadata_url=args.metadata_url)
         if not vd_sites:
             logger.error(
@@ -529,6 +542,13 @@ def _add_site_args(parser: argparse.ArgumentParser) -> None:
         default=VENDORDATA_URL,
         help="Metadata service URL for vendordata (default: %(default)s)",
     )
+    parser.add_argument(
+        "--no-vendordata",
+        action="store_true",
+        dest="no_vendordata",
+        default=False,
+        help="Skip the OpenStack metadata service lookup. Requires --auth-url or --all-sites.",
+    )
 
 
 def _setup_cc_login_parser(parser: argparse.ArgumentParser) -> None:
@@ -576,10 +596,14 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
 
     login_p = sub.add_parser("login", help="Authenticate via OIDC device flow")
     _add_site_args(login_p)
+    login_p.set_defaults(all_sites=True)
 
     sub.add_parser("logout", help="Clear cached refresh tokens")
 
-    clouds_p = sub.add_parser("clouds-yaml", help="Write a clouds.yaml file for all sites")
+    clouds_p = sub.add_parser(
+        "clouds-yaml",
+        help="Write a clouds.yaml file (current site by default, --all-sites for all)",
+    )
     _add_site_args(clouds_p)
     clouds_p.add_argument("--output", required=True, help="Output file path")
     clouds_p.add_argument(
@@ -588,11 +612,18 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         help="Overwrite existing entries",
     )
     clouds_p.add_argument(
+        "--all-sites",
+        action="store_true",
+        dest="all_sites",
+        help="Generate entries for all sites from the Chameleon reference API, not just the current site.",
+    )
+    clouds_p.add_argument(
         "--all-projects",
         action="store_true",
         help=(
-            "Generate an entry for every project at every site, named <site>_<project>. "
-            "Requires a cached token. Overrides --project-id and --cloud-name."
+            "Generate an entry for every project at the current site "
+            "(or all sites when combined with --all-sites), named <site>_<project>. "
+            "Overrides --project-id and --cloud-name."
         ),
     )
 
@@ -601,6 +632,7 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
         help="Interactively discover projects and write a clouds.yaml file",
     )
     _add_site_args(discover_p)
+    discover_p.set_defaults(all_sites=True)
     discover_p.add_argument(
         "--output",
         default="~/.config/openstack/clouds.yaml",
