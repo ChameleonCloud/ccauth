@@ -382,7 +382,7 @@ def test_cc_login_compat_output_clouds_yaml(tmp_path, monkeypatch):
     )
     assert result == 0
     data = yaml.safe_load(output.read_text())
-    cloud = data["clouds"]["chameleon"]
+    cloud = data["clouds"]["openstack"]
     assert cloud["auth_type"] == "v3applicationcredential"
     assert cloud["auth"]["application_credential_id"] == "cred-xyz"
 

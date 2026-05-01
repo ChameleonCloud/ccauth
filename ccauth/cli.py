@@ -5,7 +5,7 @@ Subcommands:
   logout            — Clear cached refresh tokens
   clouds-yaml       — Write a clouds.yaml file (current site by default, --all-sites for all)
   openrc            — Write an openrc file for the current site only
-  discover-projects — Interactive project picker and clouds.yaml generator
+  discover-projects — List all accessible projects and print clouds-yaml commands
 """
 from __future__ import annotations
 
@@ -216,56 +216,8 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
     return result
 
 
-def _parse_selection(raw: str, project_names: list[str]) -> list[str] | None:
-    """Parse user input into a list of selected project names, or None on error."""
-    if raw.lower() == "all":
-        return list(project_names)
-    selected = []
-    for token in raw.split():
-        try:
-            idx = int(token) - 1
-        except ValueError:
-            logger.error("Invalid input: %s", token)
-            return None
-        if 0 <= idx < len(project_names):
-            selected.append(project_names[idx])
-        else:
-            logger.error("Invalid selection: %s", token)
-            return None
-    if not selected:
-        logger.error("No projects selected.")
-        return None
-    return selected
-
-
-def _build_output_sites(
-    selected: list[str], by_project: dict[str, list[SiteConfig]]
-) -> list[SiteConfig]:
-    """Build the final SiteConfig list for writing, with appropriate cloud names."""
-    multi = len(selected) > 1
-    result = []
-    for project_name in selected:
-        for site in by_project[project_name]:
-            if multi:
-                slug = f"{site.cloud_name}_{project_name}".lower()
-                cloud_name = re.sub(r"[^a-z0-9]+", "_", slug).strip("_")
-            else:
-                cloud_name = site.cloud_name
-            result.append(SiteConfig(
-                auth_url=site.auth_url,
-                region_name=site.region_name,
-                cloud_name=cloud_name,
-                client_id=site.client_id,
-                discovery_endpoint=site.discovery_endpoint,
-                project_id=site.project_id,
-                identity_provider=site.identity_provider,
-                protocol=site.protocol,
-            ))
-    return result
-
-
 def _cmd_discover_projects(args) -> int:
-    """Interactive project picker: discover available projects and write a clouds.yaml."""
+    """Discover all accessible projects and print ready-to-run clouds-yaml commands."""
     sites = _build_sites(args)
     if not sites:
         return 1
@@ -276,30 +228,13 @@ def _cmd_discover_projects(args) -> int:
         logger.error("No projects found.")
         return 1
 
-    project_names = sorted(by_project)
-    print("\nAvailable projects:")
-    for i, name in enumerate(project_names, 1):
-        site_names = ", ".join(s.cloud_name for s in by_project[name])
-        print(f"  {i}. {name}  [{site_names}]")
-
-    print("\nEnter number(s) to include (e.g. '1', '1 2'), or 'all': ", end="", flush=True)
-    try:
-        raw = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    output = Path(args.output).expanduser()
+    print(f"\nFound {len(by_project)} project(s). To add a project to clouds.yaml, run:\n")
+    for name in sorted(by_project):
+        project_id = by_project[name][0].project_id
+        print(f"  # {name}")
+        print(f"  ccauth clouds-yaml --all-sites --project-id {project_id} --output {output}")
         print()
-        return 1
-
-    selected = _parse_selection(raw, project_names)
-    if selected is None:
-        return 1
-
-    output_sites = _build_output_sites(selected, by_project)
-    output_path = Path(args.output).expanduser()
-    if write_clouds_yaml(output_sites, output_path, force=args.force):
-        suffix = "y" if len(output_sites) == 1 else "ies"
-        logger.info("Wrote %d cloud entr%s to %s", len(output_sites), suffix, output_path)
-        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
-        logger.info("Verify no other OS_ environment variables are set that might interfere with authentication.")
     return 0
 
 
@@ -632,16 +567,15 @@ def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
 
     discover_p = sub.add_parser(
         "discover-projects",
-        help="Interactively discover projects and write a clouds.yaml file",
+        help="List all accessible projects and print ready-to-run clouds-yaml commands",
     )
     _add_site_args(discover_p)
     discover_p.set_defaults(all_sites=True)
     discover_p.add_argument(
         "--output",
         default="~/.config/openstack/clouds.yaml",
-        help="Output file path (default: %(default)s)",
+        help="Output path used in the printed commands (default: %(default)s)",
     )
-    discover_p.add_argument("--force", action="store_true", help="Overwrite existing entries")
 
     openrc_p = sub.add_parser(
         "openrc",

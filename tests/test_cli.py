@@ -394,7 +394,7 @@ def test_collect_all_projects_one_entry_per_site_project_pair():
 
 def _mock_vendordata(monkeypatch, data: dict):
     import ccauth.discover as discover_mod
-    monkeypatch.setattr(discover_mod, "_metadata_reachable", lambda: True)
+    monkeypatch.setattr(discover_mod, "_metadata_reachable", lambda **_: True)
     mock_resp = MagicMock()
     mock_resp.read.return_value = json.dumps(data).encode()
     mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -511,16 +511,16 @@ def test_cmd_clouds_yaml_default_single_site(tmp_path, monkeypatch):
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
-    assert "chameleon" in data["clouds"]
+    assert "openstack" in data["clouds"]
 
 
-def test_cmd_clouds_yaml_default_kvm_site_gets_chameleon_name(tmp_path, monkeypatch):
+def test_cmd_clouds_yaml_default_kvm_site_gets_openstack_name(tmp_path, monkeypatch):
     site = replace(KVM, project_id="proj-kvm")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
-    assert "chameleon" in data["clouds"]
+    assert "openstack" in data["clouds"]
     assert "kvm" not in data["clouds"]
 
 
@@ -621,19 +621,30 @@ def test_cmd_openrc_explicit_project_id_overrides_vendordata(tmp_path, monkeypat
 
 
 
-def test_cmd_discover_projects_single_project_uses_bare_site_name(tmp_path, monkeypatch):
+def test_cmd_discover_projects_prints_commands(monkeypatch, capsys):
     kvm = _site("https://kvm.tacc.chameleoncloud.org:5000/v3", "KVM@TACC", "kvm", "p1")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [kvm]})
-    monkeypatch.setattr("builtins.input", lambda: "1")
 
-    output = tmp_path / "clouds.yaml"
-    assert main(["discover-projects", "--output", str(output)]) == 0
-    data = yaml.safe_load(output.read_text())
-    assert "kvm" in data["clouds"]
+    assert main(["discover-projects"]) == 0
+    out = capsys.readouterr().out
+    assert "CHI-240042" in out
+    assert "--project-id p1" in out
+    assert "--all-sites" in out
+    assert "ccauth clouds-yaml" in out
 
 
-def test_cmd_discover_projects_multiple_projects_use_slugged_names(tmp_path, monkeypatch):
+def test_cmd_discover_projects_custom_output_in_commands(monkeypatch, capsys):
+    kvm = _site("https://kvm.tacc.chameleoncloud.org:5000/v3", "KVM@TACC", "kvm", "p1")
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
+    monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [kvm]})
+
+    assert main(["discover-projects", "--output", "/tmp/my-clouds.yaml"]) == 0
+    out = capsys.readouterr().out
+    assert "/tmp/my-clouds.yaml" in out
+
+
+def test_cmd_discover_projects_multiple_projects_all_listed(monkeypatch, capsys):
     kvm  = _site("https://kvm.tacc.chameleoncloud.org:5000/v3", "KVM@TACC", "kvm",  "p1")
     tacc = _site("https://chi.tacc.chameleoncloud.org:5000/v3", "CHI@TACC", "tacc", "p2")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM, TACC])
@@ -641,37 +652,17 @@ def test_cmd_discover_projects_multiple_projects_use_slugged_names(tmp_path, mon
         "CHI-240042": [kvm],
         "CHI-240099": [tacc],
     })
-    monkeypatch.setattr("builtins.input", lambda: "all")
 
-    output = tmp_path / "clouds.yaml"
-    assert main(["discover-projects", "--output", str(output)]) == 0
-    data = yaml.safe_load(output.read_text())
-    assert "kvm_chi_240042"  in data["clouds"]
-    assert "tacc_chi_240099" in data["clouds"]
-
-
-def test_cmd_discover_projects_invalid_number_returns_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
-    monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
-    monkeypatch.setattr("builtins.input", lambda: "99")
-    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects"]) == 0
+    out = capsys.readouterr().out
+    assert "CHI-240042" in out
+    assert "--project-id p1" in out
+    assert "CHI-240099" in out
+    assert "--project-id p2" in out
+    assert out.count("ccauth clouds-yaml") == 2
 
 
-def test_cmd_discover_projects_non_numeric_returns_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
-    monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
-    monkeypatch.setattr("builtins.input", lambda: "abc")
-    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
-
-
-def test_cmd_discover_projects_keyboard_interrupt_returns_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
-    monkeypatch.setattr("ccauth.cli._discover_projects", lambda sites: {"CHI-240042": [KVM]})
-    monkeypatch.setattr("builtins.input", MagicMock(side_effect=KeyboardInterrupt))
-    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
-
-
-def test_cmd_discover_projects_no_projects_found(tmp_path, monkeypatch):
+def test_cmd_discover_projects_no_projects_found(monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda _: {})
-    assert main(["discover-projects", "--output", str(tmp_path / "clouds.yaml")]) == 1
+    assert main(["discover-projects"]) == 1

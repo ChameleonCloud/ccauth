@@ -87,11 +87,23 @@ ccauth openrc --output ~/openrc --force
 
 #### `ccauth discover-projects`
 
-Interactively lists all projects you have access to across all sites and writes a `clouds.yaml` for the ones you choose, named `<site>_<project>`. Triggers the device flow automatically if no cached token is present.
+Lists all projects you have access to across all sites and prints ready-to-run `ccauth clouds-yaml` commands for each one. Triggers the device flow automatically if no cached token is present.
 
 ```bash
 ccauth discover-projects
-ccauth discover-projects --output ~/my-clouds.yaml
+ccauth discover-projects --output ~/my-clouds.yaml   # use a custom path in the printed commands
+```
+
+Example output:
+
+```
+Found 2 project(s). To add a project to clouds.yaml, run:
+
+  # Project 1
+  ccauth clouds-yaml --all-sites --project-id abc123 --output ~/.config/openstack/clouds.yaml
+
+  # Project 2
+  ccauth clouds-yaml --all-sites --project-id def456 --output ~/.config/openstack/clouds.yaml
 ```
 
 ### Generated clouds.yaml format
@@ -112,7 +124,7 @@ clouds:
 
 ### Site discovery
 
-Without `--auth-url`, the **current site** comes from the OpenStack metadata service at `169.254.169.254` (vendordata). This works automatically when running on a Chameleon instance. The metadata service is probed with a fast TCP check first; if unreachable (e.g. on a laptop), it is skipped immediately with no timeout.
+Without `--auth-url`, the **current site** comes from the OpenStack metadata service at `169.254.169.254` (vendordata). This works automatically when running on a Chameleon instance.
 
 `--all-sites` fetches all available sites from the Chameleon reference API (`https://api.chameleoncloud.org/sites`) and merges in the current site from vendordata when available (e.g. to pick up the correct cloud name for KVM or edge nodes).
 
