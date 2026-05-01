@@ -7,6 +7,7 @@ OpenStack metadata service (vendordata).
 import json
 import logging
 import socket
+import urllib.parse
 import urllib.request
 
 from ._urlutils import auth_url_base
@@ -69,7 +70,10 @@ def from_vendordata(metadata_url=VENDORDATA_URL):
     Only works when running on a Chameleon instance. Returns a list
     with one SiteConfig, or an empty list on failure.
     """
-    if not _metadata_reachable():
+    parsed = urllib.parse.urlparse(metadata_url)
+    host = parsed.hostname or "169.254.169.254"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not _metadata_reachable(host=host, port=port):
         return []
     try:
         with urllib.request.urlopen(metadata_url, timeout=20) as resp:

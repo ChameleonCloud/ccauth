@@ -94,7 +94,7 @@ def _build_sites(args) -> list[SiteConfig] | None:
 
         if not sites:
             logger.error(
-                "No site config found. Provide --auth-url or ensure the reference API is accessible."
+                "No sites found, provide --auth-url or ensure the reference API is accessible."
             )
             return None
     else:
@@ -429,6 +429,9 @@ def _cmd_cc_login(args) -> int:
     project_id = args.project_id or ""
 
     if not auth_url:
+        if getattr(args, "no_vendordata", False):
+            logger.error("--no-vendordata requires --auth-url.")
+            return 1
         sites = from_vendordata(metadata_url=args.metadata_url)
         if sites:
             site = sites[0]
