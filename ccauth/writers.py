@@ -27,6 +27,9 @@ def write_clouds_yaml(sites, output_path, force=False):
         )
         return False
 
+    if output_path.exists() and force:
+        backup_file(output_path)
+
     data = load_yaml(output_path)
     if not isinstance(data.get("clouds"), dict):
         data["clouds"] = {}

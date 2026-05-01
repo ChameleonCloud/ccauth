@@ -333,14 +333,14 @@ def _cmd_login(args) -> int:
         return 1
     logger.info("Authenticated successfully. Refresh token cached.")
     clouds_yaml = Path("~/.config/openstack/clouds.yaml").expanduser()
-    if not clouds_yaml.exists():
+    if clouds_yaml.exists():
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
+        logger.info("Verify no other OS_ environment variables are set that might interfere with authentication.")
+    else:
         logger.info(
             "Next: run 'ccauth clouds-yaml --output %s' to set up OpenStack credentials.",
             clouds_yaml,
         )
-    else:
-        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
-        logger.info("Verify no other OS_ environment variables are set that might interfere with authentication.")
     return 0
 
 
@@ -529,10 +529,10 @@ def _add_site_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--cloud-name",
-        default="chameleon",
+        default="openstack",
         help=(
             "Cloud name written to clouds.yaml. Only applies when --auth-url is used "
-            "(single-site mode). Ignored when discovering all sites. (default: chameleon)"
+            "(single-site mode). Ignored when discovering all sites. (default: openstack)"
         ),
     )
     parser.add_argument(

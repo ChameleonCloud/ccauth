@@ -107,7 +107,7 @@ def write_openrc(
 def write_clouds_yaml(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     app_cred: Dict[str, Any],
     output_path: Path | str,
-    cloud_name: str = "chameleon",
+    cloud_name: str = "openstack",
     auth_url: str = "",
     region_name: str = "",
     force: bool = False,
@@ -127,6 +127,9 @@ def write_clouds_yaml(  # pylint: disable=too-many-arguments,too-many-positional
             output_path,
         )
         return False
+
+    if cloud_name in data["clouds"] and force:
+        backup_file(output_path)
 
     cloud: Dict[str, Any] = {
         "auth_type": "v3applicationcredential",
