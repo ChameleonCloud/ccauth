@@ -1,188 +1,644 @@
-"""CLI entrypoint for the `ccauth` package.
+"""CLI entrypoint for ccauth.
 
-This module holds argument parsing and the `main()` function so that
-`ccauth.auth` remains a library of pure functions.
+Subcommands:
+  login             — Authenticate via OIDC device flow (optional; other commands auto-prompt)
+  logout            — Clear cached refresh tokens
+  clouds-yaml       — Write a clouds.yaml file (current site by default, --all-sites for all)
+  openrc            — Write an openrc file for the current site only
+  discover-projects — List all accessible projects and print clouds-yaml commands
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
-from typing import Optional
 
-from .auth import (
-    AuthConfig,
+from keystoneauth1.session import Session
+
+from . import __version__
+from .appcred import (
+    AppCredConfig,
     ensure_app_cred,
-    write_openrc_file,
-    write_clouds_yaml,
-    _get_app_cred_id_and_secret,
+    write_clouds_yaml as _write_clouds_yaml_appcred,  # v3applicationcredential (cc-login)
+    write_openrc as _write_openrc_appcred,            # v3applicationcredential (cc-login)
 )
+from .config import SiteConfig
+from ._urlutils import auth_url_base
+from .discover import (
+    DEFAULT_CLIENT_ID,
+    DEFAULT_DISCOVERY_ENDPOINT,
+    SITES_API_URL,
+    VENDORDATA_URL,
+    from_reference_api,
+    from_vendordata,
+    list_projects_at,
+)
+from .plugin import REFRESH_TOKEN_CACHE, ChameleonDeviceAuth, clear_cache
+from .writers import write_clouds_yaml, write_openrc_file  # v3chameleonoidc (ccauth)
 
 logger = logging.getLogger(__name__)
 
-# Cache default config to avoid redundant metadata fetches
-_default_config = AuthConfig()
+
+def _current_site(sites: list[SiteConfig], region_name: str, vd_sites: list[SiteConfig]):
+    """Return the site matching region_name, vendordata, or None."""
+    if region_name:
+        return next((s for s in sites if s.region_name == region_name), None)
+    if vd_sites:
+        return next(
+            (s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd_sites[0].auth_url)),
+            None,
+        )
+    return None
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser for cc-login CLI."""
-    p = argparse.ArgumentParser(
-        prog="cc-login-dev",
-        description="Device auth + app cred caching + openrc/clouds.yaml generation.",
-    )
+def _build_sites(args) -> list[SiteConfig] | None:
+    """Build site list from CLI args, reference API, or vendordata."""
+    if args.auth_url:
+        return [
+            SiteConfig(
+                auth_url=args.auth_url,
+                region_name=args.region_name or "",
+                project_id=args.project_id or "",
+                identity_provider=args.identity_provider,
+                protocol=args.protocol,
+                cloud_name=args.cloud_name,
+                client_id=args.client_id,
+                discovery_endpoint=args.discovery_endpoint,
+            )
+        ]
 
-    p.add_argument("--auth-url", default=_default_config.auth_url, help="Keystone auth URL")
-    p.add_argument("--identity-provider", default=_default_config.identity_provider)
-    p.add_argument("--protocol", default=_default_config.protocol)
-    p.add_argument("--client-id", default=None, help="Keycloak device token client ID")
-    p.add_argument("--keycloak-url", default=None, help="Keycloak URL")
-    p.add_argument("--keycloak-realm", default=_default_config.keycloak_realm)
+    no_vendordata = getattr(args, "no_vendordata", False)
 
-    p.add_argument("--project-id", default="", help="OpenStack project ID from vendordata or manual entry")
-    p.add_argument("--region-name", default=_default_config.region_name)
-    p.add_argument(
-        "--metadata-url",
-        default="http://169.254.169.254/openstack/latest/vendor_data2.json",
-        help="Metadata service URL for vendordata (default: http://169.254.169.254/openstack/latest/vendor_data2.json)",
-    )
+    if getattr(args, "all_sites", False):
+        # Multi-site: reference API + optional vendordata merge.
+        # Reference API sites carry no auth config; stamp it in from args.
+        sites = from_reference_api(api_url=args.sites_api_url)
+        for site in sites:
+            site.client_id = args.client_id
+            site.discovery_endpoint = args.discovery_endpoint
 
-    p.add_argument("--app-cred-name", default=_default_config.app_cred_name)
-    p.add_argument(
-        "--app-cred-expires-hours",
-        type=int,
-        default=_default_config.app_cred_expires_in_hours,
-        help="App credential expiry in hours (default 24)",
-    )
+        vd_sites = [] if no_vendordata else from_vendordata(metadata_url=args.metadata_url)
 
-    p.add_argument(
-        "--scope",
-        default=_default_config.scope,
-        help="OpenID scope for device flow auth (default: openid)",
-    )
+        # Merge vendordata site. If the site already exists in the reference API,
+        # keep one entry and prefer whichever cloud_name isn't "chameleon".
+        # If absent (KVM, edge, etc.), append it.
+        if vd_sites:
+            vd = vd_sites[0]
+            match = next((s for s in sites if auth_url_base(s.auth_url) == auth_url_base(vd.auth_url)), None)
+            if match is None:
+                sites.append(vd)
+            elif match.cloud_name == "chameleon" and vd.cloud_name != "chameleon":
+                match.cloud_name = vd.cloud_name
 
-    p.add_argument(
-        "--app-cred-cache-path",
-        default=str(_default_config.app_cred_cache_path),
-        help="Path to cached app credential JSON (default ~/.cache/ccauth/chameleon-app-cred.json)",
-    )
-    p.add_argument(
-        "--ttl-seconds",
-        type=int,
-        default=_default_config.ttl_seconds,
-        help="Local cache TTL in seconds (default 24h)",
-    )
-    p.add_argument(
-        "--force-refresh",
-        action="store_true",
-        help="Ignore cache and force new device auth + new app cred",
-    )
+        if not sites:
+            logger.error(
+                "No sites found, provide --auth-url or ensure the reference API is accessible."
+            )
+            return None
+    else:
+        # Default: current site from vendordata only.
+        if no_vendordata:
+            logger.error("--no-vendordata requires --auth-url or --all-sites.")
+            return None
 
-    p.add_argument(
-        "--output-openrc",
-        help="Write openrc-style file for this app credential",
-    )
-    p.add_argument(
-        "--output-clouds-yaml",
-        help="Write clouds.yaml with this app credential",
-    )
-    p.add_argument(
-        "--cloud-name",
-        default="chameleon",
-        help="Cloud name for clouds.yaml (default: chameleon)",
-    )
-    p.add_argument(
-        "--force-clouds-yaml",
-        action="store_true",
-        help="Overwrite existing cloud entry in clouds.yaml",
-    )
-    p.add_argument(
-        "--force-openrc",
-        action="store_true",
-        help="Overwrite existing openrc file",
-    )
-    p.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
-    )
+        vd_sites = from_vendordata(metadata_url=args.metadata_url)
+        if not vd_sites:
+            logger.error(
+                "Could not determine current site. "
+                "Pass --auth-url or use --all-sites to discover from the reference API."
+            )
+            return None
 
-    return p
+        sites = list(vd_sites)
+
+    # Apply project_id to the current site so _enrich_project_ids can use it
+    # as a seed to discover the matching ID at every other site by project name.
+    # If no current site can be identified, seed the first site as a fallback.
+    project_id = args.project_id or (vd_sites[0].project_id if vd_sites else "")
+    if project_id:
+        current = _current_site(sites, args.region_name, vd_sites)
+        (current or sites[0]).project_id = project_id
+
+    return sites
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    """Main entrypoint: parse args, perform auth, and write output files."""
-
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(levelname)s: %(message)s" if args.debug else "%(message)s",
-        stream=sys.stderr,
+def _list_projects_at(site: SiteConfig) -> list[dict]:
+    """Return Keystone projects available at a site via unscoped OIDC auth."""
+    plugin = ChameleonDeviceAuth(
+        auth_url=site.auth_url,
+        identity_provider=site.identity_provider,
+        protocol=site.protocol,
+        client_id=site.client_id,
+        discovery_endpoint=site.discovery_endpoint,
+        scope="openid",
     )
+    sess = Session(auth=plugin)
+    try:
+        return list_projects_at(sess)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("Could not list projects at %s: %s", site.auth_url, exc)
+        return []
 
-    config = AuthConfig(
-        auth_url=args.auth_url,
+
+def _enrich_project_ids(sites: list[SiteConfig]) -> None:
+    """Discover project_id at each site by matching the current site's project name."""
+    current = next((s for s in sites if s.project_id), None)
+    if not current:
+        logger.debug("No project ID seed; pass --project-id or run 'ccauth discover-projects'")
+        return
+
+    all_projects = _list_projects_at(current)
+    current_project = next((p for p in all_projects if p["id"] == current.project_id), None)
+    if not current_project:
+        logger.debug("Could not resolve name for project %s", current.project_id)
+        return
+
+    project_name = current_project["name"]
+    logger.debug("Discovering project '%s' across all sites", project_name)
+
+    for site in sites:
+        if site.project_id:
+            continue
+        match = next(
+            (p for p in _list_projects_at(site) if p["name"] == project_name),
+            None,
+        )
+        if match:
+            site.project_id = match["id"]
+            logger.debug("Found '%s' at %s: %s", project_name, site.region_name, match["id"])
+        else:
+            logger.debug("Project '%s' not found at %s", project_name, site.region_name)
+
+
+def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
+    """Return {project_name: [SiteConfig, ...]} for every project at every site.
+
+    SiteConfigs have project_id set and cloud_name left as the site name —
+    callers are responsible for setting final cloud_name values.
+    """
+    result: dict[str, list[SiteConfig]] = {}
+    for site in sites:
+        for project in _list_projects_at(site):
+            result.setdefault(project["name"], []).append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=site.cloud_name,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=project["id"],
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+    return result
+
+
+def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
+    """Return one SiteConfig per (site, project) pair with slugged cloud names."""
+    by_project = _discover_projects(sites)
+    if not by_project:
+        return []
+    result = []
+    for project_name, project_sites in by_project.items():
+        for site in project_sites:
+            slug = re.sub(r"[^a-z0-9]+", "_", f"{site.cloud_name}_{project_name}".lower()).strip("_")
+            result.append(SiteConfig(
+                auth_url=site.auth_url,
+                region_name=site.region_name,
+                cloud_name=slug,
+                client_id=site.client_id,
+                discovery_endpoint=site.discovery_endpoint,
+                project_id=site.project_id,
+                identity_provider=site.identity_provider,
+                protocol=site.protocol,
+            ))
+    return result
+
+
+def _cmd_discover_projects(args) -> int:
+    """Discover all accessible projects and print ready-to-run clouds-yaml commands."""
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+
+    logger.info("Discovering projects across all sites...")
+    by_project = _discover_projects(sites)
+    if not by_project:
+        logger.error("No projects found.")
+        return 1
+
+    output = Path(args.output).expanduser()
+    print(f"\nFound {len(by_project)} project(s). To add a project to clouds.yaml, run:\n")
+    for name in sorted(by_project):
+        project_id = by_project[name][0].project_id
+        print(f"  # {name}")
+        print(f"  ccauth clouds-yaml --all-sites --project-id {project_id} --output {output}")
+        print()
+    return 0
+
+
+def _trigger_auth(site: SiteConfig) -> None:
+    plugin = ChameleonDeviceAuth(
+        auth_url=site.auth_url,
+        identity_provider=site.identity_provider,
+        protocol=site.protocol,
+        client_id=site.client_id,
+        discovery_endpoint=site.discovery_endpoint,
+        scope="openid",
+        project_id=site.project_id,
+    )
+    sess = Session(auth=plugin)
+    sess.get_token()
+
+
+def _cmd_login(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    login_site = sites[0]
+    try:
+        _trigger_auth(login_site)
+    except KeyboardInterrupt:
+        logger.error("\nAuthentication cancelled.")
+        return 1
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Authentication failed: %s", e)
+        logger.debug("Details:", exc_info=True)
+        return 1
+    logger.info("Authenticated successfully. Refresh token cached.")
+    clouds_yaml = Path("~/.config/openstack/clouds.yaml").expanduser()
+    if clouds_yaml.exists():
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
+        logger.info("Verify no other OS_ environment variables are set that might interfere with authentication.")
+    else:
+        logger.info(
+            "Next: run 'ccauth clouds-yaml --output %s' to set up OpenStack credentials.",
+            clouds_yaml,
+        )
+    return 0
+
+
+def _cmd_logout(_args) -> int:
+    if clear_cache():
+        logger.info("Cleared cached refresh token.")
+    else:
+        logger.info("No cached token found.")
+    return 0
+
+
+def _cmd_clouds_yaml(args) -> int:
+    sites = _build_sites(args)
+    if not sites:
+        return 1
+    if args.all_projects:
+        # --all-projects (with or without --all-sites): one entry per (site, project)
+        sites = _collect_all_projects(sites)
+        if not sites:
+            return 1
+    elif getattr(args, "all_sites", False):
+        # --all-sites only: enrich project IDs across sites by project name
+        _enrich_project_ids(sites)
+    else:
+        # default (single site): use --cloud-name (default: "chameleon") regardless of vendordata
+        sites[0].cloud_name = args.cloud_name
+    missing = [s for s in sites if not s.project_id]
+    if missing:
+        names = ", ".join(s.region_name or s.auth_url for s in missing)
+        if REFRESH_TOKEN_CACHE.expanduser().exists():
+            logger.error(
+                "No project ID for: %s. Pass --project-id, use --all-projects, "
+                "or run 'ccauth discover-projects'.",
+                names,
+            )
+        else:
+            logger.error(
+                "No project ID for: %s. Run 'ccauth login' first.",
+                names,
+            )
+        return 1
+    if write_clouds_yaml(sites, Path(args.output), force=args.force):
+        logger.info("Wrote clouds.yaml to %s", args.output)
+        logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
+        logger.info("Verify no other OS_ environment variables are set that might interfere with authentication.")
+    return 0
+
+
+def _cmd_openrc(args) -> int:
+    if args.auth_url:
+        site = SiteConfig(
+            auth_url=args.auth_url,
+            region_name=args.region_name or "",
+            project_id=args.project_id or "",
+            identity_provider=args.identity_provider,
+            protocol=args.protocol,
+            cloud_name=args.cloud_name,
+            client_id=args.client_id,
+            discovery_endpoint=args.discovery_endpoint,
+        )
+    else:
+        if getattr(args, "no_vendordata", False):
+            logger.error("--no-vendordata requires --auth-url for openrc.")
+            return 1
+        vd_sites = from_vendordata(metadata_url=args.metadata_url)
+        if not vd_sites:
+            logger.error(
+                "Could not determine current site. "
+                "Provide --auth-url or run on a Chameleon instance."
+            )
+            return 1
+        site = vd_sites[0]
+        if args.project_id:
+            site.project_id = args.project_id
+
+    if write_openrc_file(site, Path(args.output), force=args.force):
+        logger.info("Wrote openrc to %s (current site only).", args.output)
+        logger.info("Source this file to set credentials. For multi-site, use 'ccauth clouds-yaml'.")
+    return 0
+
+
+def _cmd_cc_login(args) -> int:
+    """cc-login: device flow → app credential → openrc/clouds.yaml."""
+    auth_url = args.auth_url
+    region_name = args.region_name or ""
+    project_id = args.project_id or ""
+
+    if not auth_url:
+        if getattr(args, "no_vendordata", False):
+            logger.error("--no-vendordata requires --auth-url.")
+            return 1
+        sites = from_vendordata(metadata_url=args.metadata_url)
+        if sites:
+            site = sites[0]
+            auth_url = site.auth_url
+            region_name = region_name or site.region_name
+            project_id = project_id or site.project_id
+        else:
+            logger.error(
+                "No site config found. Provide --auth-url or run on a Chameleon instance."
+            )
+            return 1
+
+    config = AppCredConfig(
+        auth_url=auth_url,
+        region_name=region_name,
+        project_id=project_id,
         identity_provider=args.identity_provider,
         protocol=args.protocol,
         client_id=args.client_id,
-        keycloak_url=args.keycloak_url,
-        keycloak_realm=args.keycloak_realm,
-        project_id=args.project_id,
-        region_name=args.region_name,
-        metadata_url=args.metadata_url,
+        discovery_endpoint=args.discovery_endpoint,
         app_cred_name=args.app_cred_name,
         app_cred_expires_in_hours=args.app_cred_expires_hours,
-        scope=args.scope,
         app_cred_cache_path=Path(args.app_cred_cache_path).expanduser(),
         ttl_seconds=args.ttl_seconds,
     )
 
-    if not getattr(config, '_vendordata_available', True):
-        if config.region_name == _default_config.region_name and config.auth_url == _default_config.auth_url:
-            logger.warning(
-                "Could not reach metadata service. Using dev environment defaults. "
-                "For production, provide explicit values for: "
-                "--auth-url, --region-name, --project-id, --client-id, --keycloak-url"
-            )
+    try:
+        app_cred = ensure_app_cred(config, force_refresh=args.force_refresh)
+    except KeyboardInterrupt:
+        logger.error("\nAuthentication cancelled.")
+        return 1
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Authentication failed: %s", e)
+        logger.debug("Details:", exc_info=True)
+        return 1
 
-    app_cred = ensure_app_cred(config, force_refresh=args.force_refresh)
-
-    app_cred_id, _ = _get_app_cred_id_and_secret(app_cred)
-    cred_name = app_cred.get('name')
-    expires_at = app_cred.get("expires_at")
-
-    logger.info("Application credential: %s", cred_name)
-    logger.info("Credential ID: %s", app_cred_id)
-    if expires_at:
-        logger.info("Expires at: %s", expires_at)
+    cred_id = app_cred.get("id") or app_cred.get("application_credential_id")
+    logger.info("Application credential: %s", app_cred.get("name"))
+    logger.info("Credential ID: %s", cred_id)
+    if app_cred.get("expires_at"):
+        logger.info("Expires at: %s", app_cred["expires_at"])
 
     if args.output_openrc:
-        if write_openrc_file(
-            app_cred=app_cred,
-            output_path=args.output_openrc,
-            region_name=config.region_name,
-            auth_url=config.auth_url,
+        if _write_openrc_appcred(
+            app_cred, args.output_openrc,
+            config.auth_url, config.region_name,
             force=args.force_openrc,
         ):
             logger.info("Written openrc to %s", args.output_openrc)
 
     if args.output_clouds_yaml:
-        if write_clouds_yaml(
-            app_cred=app_cred,
-            output_path=args.output_clouds_yaml,
-            cloud_name=args.cloud_name,
-            region_name=config.region_name,
-            auth_url=config.auth_url,
+        if _write_clouds_yaml_appcred(
+            app_cred, args.output_clouds_yaml, args.cloud_name,
+            config.auth_url, config.region_name,
             force=args.force_clouds_yaml,
         ):
             logger.info("Updated clouds.yaml at %s", args.output_clouds_yaml)
 
     if not args.output_openrc and not args.output_clouds_yaml:
-        logger.info("No output files requested. To use these credentials, generate a configuration file:")
+        logger.info("No output files requested. To use these credentials:")
         logger.info("  cc-login --output-openrc ~/openrc")
         logger.info("  cc-login --output-clouds-yaml ~/clouds.yaml")
 
     return 0
+
+
+def _add_site_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--auth-url",
+        help="Keystone auth URL. Skips site discovery and targets this site only.",
+    )
+    parser.add_argument(
+        "--region-name",
+        help=(
+            "OpenStack region name. With --auth-url, sets the region on that site. "
+            "Without --auth-url, identifies the current site for login/project seeding "
+            "(does not filter the site list for clouds-yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--project-id",
+        help=(
+            "OpenStack project ID. With --auth-url, applies to that site directly. "
+            "Without --auth-url, seeds cross-site project discovery for clouds-yaml "
+            "(ignored when --all-projects is used)."
+        ),
+    )
+    parser.add_argument("--identity-provider", default="chameleon")
+    parser.add_argument("--protocol", default="openid")
+    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
+    parser.add_argument(
+        "--discovery-endpoint",
+        default=DEFAULT_DISCOVERY_ENDPOINT,
+        help="Keycloak OIDC discovery URL (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--cloud-name",
+        default="openstack",
+        help=(
+            "Cloud name written to clouds.yaml. Only applies when --auth-url is used "
+            "(single-site mode). Ignored when discovering all sites. (default: openstack)"
+        ),
+    )
+    parser.add_argument(
+        "--sites-api-url",
+        default=SITES_API_URL,
+        help="Chameleon reference API URL (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--metadata-url",
+        default=VENDORDATA_URL,
+        help="Metadata service URL for vendordata (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-vendordata",
+        action="store_true",
+        dest="no_vendordata",
+        default=False,
+        help="Skip the OpenStack metadata service lookup. Requires --auth-url or --all-sites.",
+    )
+
+
+def _setup_cc_login_parser(parser: argparse.ArgumentParser) -> None:
+    """Set up arguments for cc-login compatibility mode."""
+    parser.add_argument("--output-openrc", metavar="FILE", help="Write openrc file")
+    parser.add_argument(
+        "--output-clouds-yaml", metavar="FILE", help="Write clouds.yaml file"
+    )
+    parser.add_argument(
+        "--force-refresh", action="store_true", help="Bypass cache and re-authenticate"
+    )
+    parser.add_argument(
+        "--force-openrc", action="store_true", help="Overwrite existing openrc file"
+    )
+    parser.add_argument(
+        "--force-clouds-yaml",
+        action="store_true",
+        help="Overwrite existing clouds.yaml entry",
+    )
+    parser.add_argument(
+        "--app-cred-name", default="chi-device-flow-auth", help="App credential name prefix"
+    )
+    parser.add_argument(
+        "--app-cred-expires-hours",
+        type=int,
+        default=24,
+        help="App credential expiry in hours (default: 24)",
+    )
+    parser.add_argument(
+        "--app-cred-cache-path",
+        default="~/.cache/ccauth/chameleon-app-cred.json",
+        help="Path to app credential cache",
+    )
+    parser.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=86400,
+        help="Local cache TTL in seconds (default: 86400)",
+    )
+    _add_site_args(parser)
+
+
+def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="command")
+
+    login_p = sub.add_parser("login", help="Authenticate via OIDC device flow")
+    _add_site_args(login_p)
+    login_p.set_defaults(all_sites=True)
+
+    sub.add_parser("logout", help="Clear cached refresh tokens")
+
+    clouds_p = sub.add_parser(
+        "clouds-yaml",
+        help="Write a clouds.yaml file (current site by default, --all-sites for all)",
+    )
+    _add_site_args(clouds_p)
+    clouds_p.add_argument("--output", required=True, help="Output file path")
+    clouds_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing entries",
+    )
+    clouds_p.add_argument(
+        "--all-sites",
+        action="store_true",
+        dest="all_sites",
+        help="Generate entries for all sites from the Chameleon reference API, not just the current site.",
+    )
+    clouds_p.add_argument(
+        "--all-projects",
+        action="store_true",
+        help=(
+            "Generate an entry for every project at the current site "
+            "(or all sites when combined with --all-sites), named <site>_<project>. "
+            "Overrides --project-id and --cloud-name."
+        ),
+    )
+
+    discover_p = sub.add_parser(
+        "discover-projects",
+        help="List all accessible projects and print ready-to-run clouds-yaml commands",
+    )
+    _add_site_args(discover_p)
+    discover_p.set_defaults(all_sites=True)
+    discover_p.add_argument(
+        "--output",
+        default="~/.config/openstack/clouds.yaml",
+        help="Output path used in the printed commands (default: %(default)s)",
+    )
+
+    openrc_p = sub.add_parser(
+        "openrc",
+        help="Write an openrc file for the current site only",
+        description=(
+            "Write a bash-sourceable openrc file for a single site. "
+            "Unlike clouds-yaml, openrc only supports one site at a time. "
+            "Run this on each site you want credentials for, or use "
+            "clouds-yaml to configure all sites at once."
+        ),
+    )
+    _add_site_args(openrc_p)
+    openrc_p.add_argument("--output", required=True, help="Output file path (single site only)")
+    openrc_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing file",
+    )
+
+
+def _setup_logging(debug: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(levelname)s: %(message)s" if debug else "%(message)s",
+        stream=sys.stderr,
+    )
+
+
+def main(argv=None, use_cc_login_compat=False) -> int:
+    """Parse arguments and dispatch to the appropriate subcommand handler."""
+    parser = argparse.ArgumentParser(
+        prog="ccauth" if not use_cc_login_compat else "cc-login",
+        description="Chameleon OIDC device flow authentication.",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+
+    if use_cc_login_compat:
+        _setup_cc_login_parser(parser)
+        args = parser.parse_args(argv)
+        _setup_logging(args.debug)
+        return _cmd_cc_login(args)
+
+    _setup_subcommand_parsers(parser)
+    args = parser.parse_args(argv)
+    _setup_logging(args.debug)
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    commands = {
+        "login": _cmd_login,
+        "logout": _cmd_logout,
+        "clouds-yaml": _cmd_clouds_yaml,
+        "openrc": _cmd_openrc,
+        "discover-projects": _cmd_discover_projects,
+    }
+    return commands[args.command](args)
+
+
+def main_cc_login(argv=None) -> int:
+    """Entry point for cc-login command (compatibility wrapper)."""
+    return main(argv, use_cc_login_compat=True)

@@ -2,43 +2,111 @@
 
 OpenStack Chameleon device-flow authentication helper with application-credential caching.
 
-Uses Keycloak OIDC device flow to obtain credentials, creates short-lived
-application credentials, and caches them locally. Provides both CLI and library APIs.
+In most cases, we recommend the `ccauth`-based flow, as it is both more convenient and more secure. In some cases, such as noninteractive or ephemeral workflows, the application credential-based flow may be more suitable, so we provide both below.
+
+**`ccauth`** is the most convenient option for interactive use. It caches and refreshes credentials automatically, and allows you to authenticate from the CLI by opening a link in your browser. It works with all OpenStack CLI or API commands that understand a `clouds.yaml` file. Because this implements a keystoneauth1 plugin, `ccauth` must be installed in the same Python environment as the OpenStack clients using it.
+
+**`cc-login`** is an alternate method using OpenStack application credentials. This is useful to generate portable `openrc`/`clouds.yaml` credential files that will work even if `ccauth` is not installed. Note: because these credentials are used to create more credentials, they are unrestricted — if leaked, they could be used to create non-expiring credentials as your user.
 
 ## Installation
 
 ```bash
-pip install -e .
-pip install -e '.[test]'
+pip install ccauth
 ```
 
-## CLI
+---
 
-After installation, use the `cc-login` command:
+## ccauth — OIDC plugin interface
+
+### Quick start
 
 ```bash
-# Generate openrc file
-cc-login --output-openrc ~/openrc
+# Generate clouds.yaml for the current site and project.
+# On first run you'll be prompted to visit a URL to authenticate.
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
 
-# Generate clouds.yaml
-cc-login --output-clouds-yaml ~/clouds.yaml
-
-# View all options
-cc-login --help
+# Use a specific cloud (which can be found by name in clouds.yaml)
+export OS_CLOUD=chameleon
+openstack server list
 ```
 
-## keystoneauth plugin
+Subsequent runs reuse the cached refresh token silently. `ccauth login` is available as a convenience to pre-authenticate or verify credentials, but it is not a required first step — `clouds-yaml` and `discover-projects` will trigger the device flow automatically if no cached token is present.
 
-`ccauth` registers a `v3chameleonoidc` auth plugin with keystoneauth1.
-Any OpenStack tool that uses keystoneauth (`openstack`, `python-chi`, etc.)
-can use it directly.
+### Subcommands
 
-The plugin runs the OIDC device flow on first use, then caches the refresh
-token to `~/.cache/ccauth/refresh_token.json`. Subsequent authentications 
-refresh silently. Override the cache directory with the `CC_LOGIN_STATE` 
-env var.
+#### `ccauth login`
 
-Example `clouds.yaml`:
+Optional. Runs the OIDC device flow and caches a refresh token. Useful for pre-authenticating or verifying credentials before running other commands. Discovers the current site from the OpenStack metadata service when on a Chameleon instance.
+
+```bash
+ccauth login
+ccauth login --auth-url https://chi.uc.chameleoncloud.org:5000/v3
+ccauth --debug login
+```
+
+#### `ccauth logout`
+
+Clears the cached refresh token.
+
+```bash
+ccauth logout
+```
+
+#### `ccauth clouds-yaml`
+
+Writes a `clouds.yaml` file. By default, generates a single entry for the current site and project (discovered from the OpenStack metadata service). Use `--all-sites` to cover all Chameleon sites.
+
+```bash
+# Current site + current project (default)
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml
+
+# All sites + current project, one entry per site
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-sites
+
+# Current site + all projects, one entry per project
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-projects
+
+# All sites + all projects
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --all-sites --all-projects
+
+# Overwrite existing entries
+ccauth clouds-yaml --output ~/.config/openstack/clouds.yaml --force
+```
+
+`--all-projects` generates one entry per (site, project) pair, named `<site>_<project>`. `--no-vendordata` skips the metadata service lookup; requires `--auth-url` or `--all-sites`.
+
+#### `ccauth openrc`
+
+Writes an openrc file for a single site (use `clouds-yaml` for multi-site).
+
+```bash
+ccauth openrc --output ~/openrc
+ccauth openrc --auth-url https://chi.uc.chameleoncloud.org:5000/v3 --output ~/openrc
+ccauth openrc --output ~/openrc --force
+```
+
+#### `ccauth discover-projects`
+
+Lists all projects you have access to across all sites and prints ready-to-run `ccauth clouds-yaml` commands for each one. Triggers the device flow automatically if no cached token is present.
+
+```bash
+ccauth discover-projects
+ccauth discover-projects --output ~/my-clouds.yaml   # use a custom path in the printed commands
+```
+
+Example output:
+
+```
+Found 2 project(s). To add a project to clouds.yaml, run:
+
+  # Project 1
+  ccauth clouds-yaml --all-sites --project-id abc123 --output ~/.config/openstack/clouds.yaml
+
+  # Project 2
+  ccauth clouds-yaml --all-sites --project-id def456 --output ~/.config/openstack/clouds.yaml
+```
+
+### Generated clouds.yaml format
 
 ```yaml
 clouds:
@@ -54,29 +122,137 @@ clouds:
     region_name: CHI@UC
 ```
 
-Then:
+### Site discovery
+
+Without `--auth-url`, the **current site** comes from the OpenStack metadata service at `169.254.169.254` (vendordata). This works automatically when running on a Chameleon instance.
+
+`--all-sites` fetches all available sites from the Chameleon reference API (`https://api.chameleoncloud.org/sites`) and merges in the current site from vendordata when available (e.g. to pick up the correct cloud name for KVM or edge nodes).
+
+Use `--no-vendordata` to skip the metadata service entirely; requires `--auth-url` or `--all-sites`.
+
+Override the discovery endpoints with `--sites-api-url` and `--metadata-url`.
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--auth-url URL` | auto-discovered | Keystone auth URL (skips discovery) |
+| `--region-name NAME` | auto-discovered | OpenStack region |
+| `--project-id ID` | auto-discovered | OpenStack project ID |
+| `--client-id ID` | `chi-cli-device-token` | OIDC client ID |
+| `--discovery-endpoint URL` | Chameleon Keycloak | OIDC discovery URL |
+| `--cloud-name NAME` | `chameleon` | Cloud name in clouds.yaml |
+| `--sites-api-url URL` | Chameleon reference API | Reference API URL |
+| `--metadata-url URL` | `169.254.169.254/...` | Vendordata metadata URL |
+| `--no-vendordata` | false | Skip metadata service lookup (requires `--auth-url` or `--all-sites`) |
+| `--debug` | false | Enable debug logging |
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `CC_LOGIN_STATE` | `~/.cache/ccauth` | Directory for cached refresh token |
+
+---
+
+## cc-login — application credential management
+
+### Quick start
 
 ```bash
-export OS_CLOUD=chameleon
-openstack server list
+# Authenticate and generate an openrc file
+cc-login --output-openrc ~/openrc
+
+# Authenticate and generate a clouds.yaml entry
+cc-login --output-clouds-yaml ~/.config/openstack/clouds.yaml
+
+# Force a new device flow + new credential (bypass cache)
+cc-login --output-openrc ~/openrc --force-refresh
+
+# Overwrite an existing file
+cc-login --output-openrc ~/openrc --force-openrc
+cc-login --output-clouds-yaml ~/clouds.yaml --force-clouds-yaml
+
+# Specify a site explicitly (skips auto-discovery)
+cc-login --auth-url https://chi.uc.chameleoncloud.org:5000/v3 --output-openrc ~/openrc
 ```
 
-## Linting
+On first run (or with `--force-refresh`), `cc-login` starts an OIDC device flow. A short-lived application credential is created and cached at `~/.cache/ccauth/chameleon-app-cred.json`. Subsequent runs within the TTL reuse the cached credential.
 
-Install the linting dependencies:
+### Generated openrc format
 
 ```bash
-pip install -e '.[lint]'
+export OS_AUTH_TYPE="v3applicationcredential"
+export OS_AUTH_URL="https://chi.uc.chameleoncloud.org:5000/v3"
+export OS_REGION_NAME="CHI@UC"
+export OS_APPLICATION_CREDENTIAL_ID="<id>"
+export OS_APPLICATION_CREDENTIAL_SECRET="<secret>"
 ```
 
-Run pylint on the package:
+### Generated clouds.yaml format
 
-```bash
-pylint ccauth/
+```yaml
+clouds:
+  chameleon:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: https://chi.uc.chameleoncloud.org:5000/v3
+      application_credential_id: <id>
+      application_credential_secret: <secret>
+    region_name: CHI@UC
 ```
 
-## Testing
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--output-openrc FILE` | — | Write openrc file |
+| `--output-clouds-yaml FILE` | — | Write clouds.yaml entry |
+| `--force-refresh` | false | Bypass cache, re-authenticate |
+| `--force-openrc` | false | Overwrite existing openrc |
+| `--force-clouds-yaml` | false | Overwrite existing clouds.yaml entry |
+| `--auth-url URL` | auto-discovered | Keystone auth URL |
+| `--region-name NAME` | auto-discovered | OpenStack region |
+| `--project-id ID` | auto-discovered | OpenStack project |
+| `--cloud-name NAME` | `chameleon` | Cloud name in clouds.yaml |
+| `--app-cred-name PREFIX` | `chi-device-flow-auth` | App credential name prefix |
+| `--app-cred-expires-hours N` | `24` | Credential lifetime in hours |
+| `--app-cred-cache-path PATH` | `~/.cache/ccauth/chameleon-app-cred.json` | Cache file path |
+| `--ttl-seconds N` | `86400` | Local cache TTL |
+| `--debug` | false | Enable debug logging |
+
+---
+
+## Library usage
+
+```python
+# Core OIDC auth — build a keystoneauth1 session
+from ccauth import AuthConfig, build_session
+
+config = AuthConfig(auth_url="https://chi.uc.chameleoncloud.org:5000/v3")
+session = build_session(config)  # prompts device flow on first call
+
+# App credential caching (cc-login workflow)
+from ccauth import AppCredConfig, ensure_app_cred
+from ccauth.appcred import write_openrc, write_clouds_yaml
+
+config = AppCredConfig(auth_url="https://chi.uc.chameleoncloud.org:5000/v3")
+app_cred = ensure_app_cred(config)
+write_openrc(app_cred, "~/openrc", auth_url=config.auth_url)
+
+# Site discovery
+from ccauth import from_reference_api, from_vendordata
+
+sites = from_reference_api()   # all Chameleon sites
+sites = from_vendordata()      # current site (on a Chameleon instance)
+```
+
+---
+
+## Development
 
 ```bash
+pip install -e '.[dev]'
 pytest
+pylint ccauth/
 ```

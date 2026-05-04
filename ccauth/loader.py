@@ -12,6 +12,8 @@ from ccauth.plugin import ChameleonDeviceAuth
 
 
 class ChameleonDeviceAuthLoader(OpenIDConnectDeviceAuthorization):
+    """keystoneauth1 loader that substitutes ChameleonDeviceAuth as the plugin class."""
+
     @property
     def plugin_class(self):
         return ChameleonDeviceAuth
