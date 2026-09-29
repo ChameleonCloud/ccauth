@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ccauth"
-version = "0.3.0"
+dynamic = ["version"]
 description = "OIDC device flow auth plugin and app-credential caching for OpenStack on Chameleon"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,6 +14,8 @@ dependencies = [
 	"PyYAML>=5.4",
 	"keystoneauth1>=4.5.0",
 ]
+
+[tool.setuptools_scm]
 
 [tool.pylint.format]
 max-line-length = 120
