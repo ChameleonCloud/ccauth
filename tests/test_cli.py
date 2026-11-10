@@ -490,17 +490,22 @@ def test_cmd_login_falls_back_to_first_site(monkeypatch):
 
 
 def test_cmd_logout_clears_token(tmp_path, monkeypatch):
-    cache = tmp_path / "token.json"
-    cache.write_text('{"refresh_token": "tok"}')
     import ccauth.plugin as plugin_mod
-    monkeypatch.setattr(plugin_mod, "REFRESH_TOKEN_CACHE", cache)
+    monkeypatch.setattr(plugin_mod, "_STATE_DIR", tmp_path)
+    caches = [
+        plugin_mod.refresh_token_cache_path("https://idp-a", "client"),
+        plugin_mod.refresh_token_cache_path("https://idp-b", "client"),
+        tmp_path / "refresh_token.json",  # legacy shared file
+    ]
+    for cache in caches:
+        cache.write_text('{"refresh_token": "tok"}')
     assert main(["logout"]) == 0
-    assert not cache.exists()
+    assert not any(cache.exists() for cache in caches)
 
 
 def test_cmd_logout_no_token_is_ok(tmp_path, monkeypatch):
     import ccauth.plugin as plugin_mod
-    monkeypatch.setattr(plugin_mod, "REFRESH_TOKEN_CACHE", tmp_path / "nonexistent.json")
+    monkeypatch.setattr(plugin_mod, "_STATE_DIR", tmp_path / "nonexistent")
     assert main(["logout"]) == 0
 
 
