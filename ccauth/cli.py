@@ -35,7 +35,7 @@ from .discover import (
     from_vendordata,
     list_projects_at,
 )
-from .plugin import REFRESH_TOKEN_CACHE, ChameleonDeviceAuth, clear_cache
+from .plugin import ChameleonDeviceAuth, clear_cache, has_cached_refresh_token
 from .writers import write_clouds_yaml, write_openrc_file  # v3chameleonoidc (ccauth)
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,7 @@ def _cmd_login(args) -> int:
 
 def _cmd_logout(_args) -> int:
     if clear_cache():
-        logger.info("Cleared cached refresh token.")
+        logger.info("Cleared cached refresh token(s).")
     else:
         logger.info("No cached token found.")
     return 0
@@ -326,7 +326,7 @@ def _cmd_clouds_yaml(args) -> int:
     missing = [s for s in sites if not s.project_id]
     if missing:
         names = ", ".join(s.region_name or s.auth_url for s in missing)
-        if REFRESH_TOKEN_CACHE.expanduser().exists():
+        if has_cached_refresh_token():
             logger.error(
                 "No project ID for: %s. Pass --project-id, use --all-projects, "
                 "or run 'ccauth discover-projects'.",

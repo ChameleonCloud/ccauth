@@ -5,6 +5,7 @@ On first use, runs the interactive device flow and caches the refresh token.
 On subsequent use, silently refreshes without user interaction.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -19,7 +20,20 @@ from keystoneauth1.identity.v3.oidc import OidcDeviceAuthorization
 LOG = logging.getLogger(__name__)
 
 _STATE_DIR = Path(os.environ.get("CC_LOGIN_STATE", "~/.cache/ccauth"))
-REFRESH_TOKEN_CACHE = _STATE_DIR / "refresh_token.json"
+# Pre-#9 single shared cache file. Still read (once) so existing logins
+# survive the upgrade, and removed by clear_cache().
+LEGACY_REFRESH_TOKEN_CACHE = _STATE_DIR / "refresh_token.json"
+
+
+def refresh_token_cache_path(issuer, client_id):
+    """Return the refresh token cache file for an (IdP, client) pair.
+
+    Sites that share an IdP (e.g. all production Chameleon sites) share a token;
+    different IdPs (e.g. production vs. dev Keycloak) get separate files.
+    """
+    key = f"{(issuer or '').rstrip('/')}|{client_id or ''}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return _STATE_DIR / f"refresh_token-{digest}.json"
 
 # Seconds to wait on the Keystone federated auth endpoint before giving up.
 # Keeps one unreachable site from hanging login indefinitely.
@@ -48,7 +62,7 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
     def _cache_refresh_token(self, refresh_token):
         """Persist the refresh token and remember that we did so."""
         if refresh_token:
-            _save_refresh_token(REFRESH_TOKEN_CACHE, refresh_token)
+            _save_refresh_token(self.refresh_token_cache, refresh_token)
             self.refresh_token_cached = True
 
     def _get_keystone_token(self, session, access_token):
@@ -69,6 +83,12 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         except exceptions.ClientException as exc:
             LOG.warning("Could not get a Keystone token from %s: %s", self.auth_url, exc)
             raise
+
+    @property
+    def refresh_token_cache(self):
+        """Cache file for this plugin's IdP + client_id."""
+        issuer = self.discovery_endpoint or self.access_token_endpoint or self.auth_url
+        return refresh_token_cache_path(issuer, self.client_id)
 
     def _get_access_token(self, session, payload):
         """Exchange grant for an access token, capturing the full response.
@@ -159,7 +179,12 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
 
     def get_unscoped_auth_ref(self, session):
         """Authenticate, trying cached refresh token before device flow."""
-        cached = _load_refresh_token(REFRESH_TOKEN_CACHE)
+        cache_path = self.refresh_token_cache
+        cached = _load_refresh_token(cache_path)
+        from_legacy = False
+        if not cached:
+            cached = _load_refresh_token(LEGACY_REFRESH_TOKEN_CACHE)
+            from_legacy = bool(cached)
         if cached:
             try:
                 payload = {
@@ -171,6 +196,10 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                 self._cache_refresh_token(
                     self._last_token_response.get("refresh_token", cached)
                 )
+                if from_legacy:
+                    # The legacy token belonged to this IdP; it now lives in
+                    # the per-IdP file, so drop the shared one.
+                    LEGACY_REFRESH_TOKEN_CACHE.expanduser().unlink(missing_ok=True)
             except exceptions.http.BadRequest as exc:
                 LOG.debug("Refresh token rejected (invalid or expired): %s", exc)
             except exceptions.http.Unauthorized as exc:
@@ -187,13 +216,29 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
         return super().get_unscoped_auth_ref(session)
 
 
+def _cached_token_files():
+    state_dir = _STATE_DIR.expanduser()
+    if not state_dir.is_dir():
+        return []
+    return [
+        p
+        for p in state_dir.glob("refresh_token*.json")
+        if p.is_file()
+    ]
+
+
+def has_cached_refresh_token():
+    """Return True if any refresh token is cached (for any IdP)."""
+    return bool(_cached_token_files())
+
+
 def clear_cache():
-    """Remove cached refresh token. Returns True if a file was removed."""
-    p = REFRESH_TOKEN_CACHE.expanduser()
-    if p.exists():
-        p.unlink()
-        return True
-    return False
+    """Remove all cached refresh tokens. Returns True if any file was removed."""
+    removed = False
+    for p in _cached_token_files():
+        p.unlink(missing_ok=True)
+        removed = True
+    return removed
 
 
 def _load_refresh_token(path):
