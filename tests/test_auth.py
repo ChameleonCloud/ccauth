@@ -77,6 +77,7 @@ def test_write_clouds_yaml(tmp_path):
     assert cloud["auth_type"] == "v3chameleonoidc"
     assert cloud["auth"]["auth_url"] == SITE.auth_url
     assert cloud["auth"]["project_id"] == SITE.project_id
+    assert "project_domain_id" not in cloud["auth"]
     assert cloud["region_name"] == SITE.region_name
 
 
