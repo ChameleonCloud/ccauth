@@ -143,7 +143,7 @@ def _list_projects_at(site: SiteConfig) -> list[dict]:
 
 
 def _enrich_project_ids(sites: list[SiteConfig]) -> None:
-    """Discover project_id at each site by matching the current site's project name."""
+    """Discover project_id and project_domain_id at each site by matching the current site's project name."""
     current = next((s for s in sites if s.project_id), None)
     if not current:
         logger.debug("No project ID seed; pass --project-id or run 'ccauth discover-projects'")
@@ -154,6 +154,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
     if not current_project:
         logger.debug("Could not resolve name for project %s", current.project_id)
         return
+    current.project_domain_id = current_project.get("domain_id", "")
 
     project_name = current_project["name"]
     logger.debug("Discovering project '%s' across all sites", project_name)
@@ -167,6 +168,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
         )
         if match:
             site.project_id = match["id"]
+            site.project_domain_id = match.get("domain_id", "")
             logger.debug("Found '%s' at %s: %s", project_name, site.region_name, match["id"])
         else:
             logger.debug("Project '%s' not found at %s", project_name, site.region_name)
@@ -188,6 +190,7 @@ def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=project["id"],
+                project_domain_id=project.get("domain_id", ""),
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -210,6 +213,7 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=site.project_id,
+                project_domain_id=site.project_domain_id,
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))

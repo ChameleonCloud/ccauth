@@ -47,6 +47,8 @@ def write_clouds_yaml(sites, output_path, force=False):
             },
             "region_name": site.region_name,
         }
+        if site.project_domain_id:
+            data["clouds"][site.cloud_name]["auth"]["project_domain_id"] = site.project_domain_id
 
     write_secure(output_path, yaml.safe_dump(data, default_flow_style=False))
     return True
