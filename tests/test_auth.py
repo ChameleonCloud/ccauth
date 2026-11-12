@@ -1,6 +1,7 @@
 """Tests for auth.py (AuthConfig, build_session) and appcred.py."""
 import stat
 import sys
+from dataclasses import replace
 from io import StringIO
 from unittest.mock import MagicMock
 
@@ -407,3 +408,54 @@ def test_cc_login_compat_force_flags_accepted(tmp_path, monkeypatch):
     )
     assert result == 0
     assert 'OS_AUTH_TYPE="v3applicationcredential"' in output.read_text()
+
+
+# --- project_name in clouds.yaml ---
+
+def _auth_entry(path, cloud_name="chi_uc"):
+    return yaml.safe_load(path.read_text())["clouds"][cloud_name]["auth"]
+
+
+def test_write_clouds_yaml_prefers_project_name(tmp_path):
+    # keystoneauth scopes by project_id whenever it is set, so it must not be
+    # written alongside the name.
+    path = tmp_path / "clouds.yaml"
+    write_clouds_yaml([replace(SITE, project_name="CHI-240042")], path)
+
+    auth = _auth_entry(path)
+    assert auth["project_name"] == "CHI-240042"
+    assert auth["project_domain_name"] == "chameleon"
+    assert "project_id" not in auth
+
+
+def test_write_clouds_yaml_falls_back_to_project_id(tmp_path):
+    path = tmp_path / "clouds.yaml"
+    write_clouds_yaml([SITE], path)
+
+    auth = _auth_entry(path)
+    assert auth["project_id"] == SITE.project_id
+    assert "project_name" not in auth
+    assert "project_domain_name" not in auth
+
+
+def test_write_clouds_yaml_custom_project_domain(tmp_path):
+    path = tmp_path / "clouds.yaml"
+    write_clouds_yaml([replace(SITE, project_name="CHI-240042", project_domain_name="other")], path)
+
+    assert _auth_entry(path)["project_domain_name"] == "other"
+
+
+def test_write_clouds_yaml_force_replaces_id_entry_with_name(tmp_path):
+    path = tmp_path / "clouds.yaml"
+    write_clouds_yaml([SITE], path)
+    write_clouds_yaml([replace(SITE, project_name="CHI-240042")], path, force=True)
+
+    auth = _auth_entry(path)
+    assert auth["project_name"] == "CHI-240042"
+    assert "project_id" not in auth
+
+
+def test_site_config_project_defaults():
+    site = SiteConfig(auth_url="https://example.com:5000/v3", region_name="X", cloud_name="x")
+    assert site.project_name == ""
+    assert site.project_domain_name == "chameleon"

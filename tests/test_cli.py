@@ -282,22 +282,32 @@ def test_enrich_skips_when_no_seeded_site():
     mock_list.assert_not_called()
 
 
-def test_enrich_fills_missing_project_ids():
+def test_enrich_applies_seed_project_name_to_every_site():
     seeded = _site("https://a.com:5000/v3", "A", project_id="p1")
     other  = _site("https://b.com:5000/v3", "B")
-
-    def mock_list(site):
-        if site is seeded:
-            return [{"id": "p1", "name": "CHI-240042"}]
-        if site is other:
-            return [{"id": "p2", "name": "CHI-240042"}]
-        return []
+    mock_list = MagicMock(return_value=[{"id": "p1", "name": "CHI-240042"}])
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("ccauth.cli._list_projects_at", mock_list)
         _enrich_project_ids([seeded, other])
 
-    assert other.project_id == "p2"
+    assert seeded.project_name == other.project_name == "CHI-240042"
+    assert other.project_id == ""
+    # Only the seed site is queried; other sites' IDs aren't needed.
+    mock_list.assert_called_once_with(seeded)
+
+
+def test_enrich_sets_no_name_when_seed_id_not_found():
+    seeded = _site("https://a.com:5000/v3", "A", project_id="p1")
+    other  = _site("https://b.com:5000/v3", "B")
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr("ccauth.cli._list_projects_at", MagicMock(
+            return_value=[{"id": "someone-else", "name": "CHI-999999"}]
+        ))
+        _enrich_project_ids([seeded, other])
+
+    assert seeded.project_name == other.project_name == ""
 
 
 def test_enrich_does_not_overwrite_existing_project_id():
@@ -311,9 +321,12 @@ def test_enrich_does_not_overwrite_existing_project_id():
         _enrich_project_ids([seeded, other])
 
     assert other.project_id == "already-set"
+    assert other.project_name == "CHI-240042"
 
 
-def test_enrich_leaves_empty_when_project_not_found_at_site():
+def test_enrich_names_site_where_project_not_listed_yet():
+    # Keystone creates a federated project on a member's first login at a
+    # site, so a site that doesn't list it yet still gets the name.
     seeded = _site("https://a.com:5000/v3", "A", project_id="p1")
     other  = _site("https://b.com:5000/v3", "B")
 
@@ -326,7 +339,7 @@ def test_enrich_leaves_empty_when_project_not_found_at_site():
         mp.setattr("ccauth.cli._list_projects_at", mock_list)
         _enrich_project_ids([seeded, other])
 
-    assert other.project_id == ""
+    assert other.project_name == "CHI-240042"
 
 
 
@@ -342,6 +355,7 @@ def test_discover_projects_groups_by_name():
     assert len(result["CHI-240042"]) == 2
     ids = {s.project_id for s in result["CHI-240042"]}
     assert ids == {"p-tacc", "p-uc"}
+    assert all(s.project_name == "CHI-240042" for s in result["CHI-240042"])
 
 
 def test_discover_projects_multiple_projects_per_site():
@@ -378,6 +392,7 @@ def test_collect_all_projects_slugged_names():
     assert len(result) == 1
     assert result[0].cloud_name == "tacc_chi_240042"
     assert result[0].project_id == "p1"
+    assert result[0].project_name == "CHI-240042"
 
 
 def test_collect_all_projects_one_entry_per_site_project_pair():
@@ -621,6 +636,63 @@ def test_cmd_clouds_yaml_missing_project_id_errors(tmp_path, monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [replace(TACC)])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 1
+
+
+def test_cmd_clouds_yaml_accepts_project_name_without_id(tmp_path, monkeypatch):
+    site = replace(TACC, project_name="CHI-240042")
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
+    output = tmp_path / "clouds.yaml"
+    assert main(["clouds-yaml", "--output", str(output)]) == 0
+    auth = yaml.safe_load(output.read_text())["clouds"]["openstack"]["auth"]
+    assert auth["project_name"] == "CHI-240042"
+
+
+def test_cmd_clouds_yaml_all_sites_writes_project_name_everywhere(tmp_path, monkeypatch):
+    sites = [replace(TACC, project_id="p1"), replace(UC)]
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: sites)
+    list_projects = MagicMock(return_value=[{"id": "p1", "name": "CHI-240042"}])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", list_projects)
+    output = tmp_path / "clouds.yaml"
+
+    assert main(["clouds-yaml", "--output", str(output), "--all-sites"]) == 0
+
+    clouds = yaml.safe_load(output.read_text())["clouds"]
+    assert set(clouds) == {"tacc", "uc"}
+    for cloud in clouds.values():
+        assert cloud["auth"]["project_name"] == "CHI-240042"
+        assert "project_id" not in cloud["auth"]
+    list_projects.assert_called_once()
+
+
+def test_cmd_clouds_yaml_all_sites_errors_when_name_unresolved(tmp_path, monkeypatch, caplog):
+    sites = [replace(TACC, project_id="p1"), replace(UC)]
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: sites)
+    monkeypatch.setattr("ccauth.cli._list_projects_at", MagicMock(return_value=[]))
+    monkeypatch.setattr("ccauth.cli.has_cached_refresh_token", lambda: True)
+    output = tmp_path / "clouds.yaml"
+
+    with caplog.at_level("ERROR", logger="ccauth.cli"):
+        assert main(["clouds-yaml", "--output", str(output), "--all-sites"]) == 1
+    # The seeded site still has its ID; only the other site is missing a project.
+    assert "CHI@UC" in caplog.text
+    assert "CHI@TACC" not in caplog.text
+    assert not output.exists()
+
+
+def test_cmd_clouds_yaml_all_projects_writes_project_names(tmp_path, monkeypatch):
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC, UC])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [
+        {"id": f"p-{site.cloud_name}", "name": "CHI-240042"}
+    ])
+    output = tmp_path / "clouds.yaml"
+
+    assert main(["clouds-yaml", "--output", str(output), "--all-projects"]) == 0
+
+    clouds = yaml.safe_load(output.read_text())["clouds"]
+    assert set(clouds) == {"tacc_chi_240042", "uc_chi_240042"}
+    for cloud in clouds.values():
+        assert cloud["auth"]["project_name"] == "CHI-240042"
+        assert "project_id" not in cloud["auth"]
 
 
 

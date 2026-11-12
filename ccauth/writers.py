@@ -56,12 +56,11 @@ def write_clouds_yaml(sites: list[SiteConfig], output_path, force=False):
         data["clouds"] = {}
 
     for site in sites:
-        for site in sites:
-            data["clouds"][site.cloud_name] = {
-                "auth_type": "v3chameleonoidc",
-                "auth": _build_site_auth(site),
-                "region_name": site.region_name,
-            }
+        data["clouds"][site.cloud_name] = {
+            "auth_type": "v3chameleonoidc",
+            "auth": _build_site_auth(site),
+            "region_name": site.region_name,
+        }
 
     write_secure(output_path, yaml.safe_dump(data, default_flow_style=False))
     return True
