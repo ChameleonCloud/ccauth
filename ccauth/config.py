@@ -13,5 +13,6 @@ class SiteConfig:  # pylint: disable=too-many-instance-attributes
     client_id: str = ""
     discovery_endpoint: str = ""
     project_id: str = ""
+    project_domain_id: str = ""
     identity_provider: str = "chameleon"
     protocol: str = "openid"

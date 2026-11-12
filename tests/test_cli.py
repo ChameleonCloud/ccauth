@@ -546,6 +546,7 @@ def test_cmd_logout_no_token_is_ok(tmp_path, monkeypatch):
 def test_cmd_clouds_yaml_default_single_site(tmp_path, monkeypatch):
     site = replace(TACC, project_id="proj-tacc")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
@@ -555,6 +556,7 @@ def test_cmd_clouds_yaml_default_single_site(tmp_path, monkeypatch):
 def test_cmd_clouds_yaml_default_kvm_site_gets_openstack_name(tmp_path, monkeypatch):
     site = replace(KVM, project_id="proj-kvm")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
@@ -572,14 +574,30 @@ def test_cmd_clouds_yaml_all_sites_calls_enrich(tmp_path, monkeypatch):
     assert enriched  # enrich was called
 
 
-def test_cmd_clouds_yaml_default_does_not_call_enrich(tmp_path, monkeypatch):
+def test_cmd_clouds_yaml_all_sites_writes_project_domain_id(tmp_path, monkeypatch):
+    tacc = replace(TACC, project_id="proj-tacc")
+    uc = replace(UC)
+    projects = {
+        tacc.auth_url: [{"id": "proj-tacc", "name": "CHI-240042", "domain_id": "dom-tacc"}],
+        uc.auth_url: [{"id": "proj-uc", "name": "CHI-240042", "domain_id": "dom-uc"}],
+    }
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [tacc, uc])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: projects[site.auth_url])
+    output = tmp_path / "clouds.yaml"
+    assert main(["clouds-yaml", "--output", str(output), "--all-sites"]) == 0
+    clouds = yaml.safe_load(output.read_text())["clouds"]
+    assert clouds["tacc"]["auth"]["project_domain_id"] == "dom-tacc"
+    assert clouds["uc"]["auth"]["project_domain_id"] == "dom-uc"
+
+
+def test_cmd_clouds_yaml_default_calls_enrich(tmp_path, monkeypatch):
     site = replace(TACC, project_id="proj-tacc")
     enriched = []
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
     monkeypatch.setattr("ccauth.cli._enrich_project_ids", lambda s: enriched.append(s))
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
-    assert not enriched  # enrich was NOT called for default single-site mode
+    assert enriched  # enrich was called for default single-site mode
 
 
 def test_cmd_clouds_yaml_all_projects_flag(tmp_path, monkeypatch):
