@@ -15,6 +15,7 @@ from ccauth.cli import (
     _discover_projects,
     _enrich_project_ids,
     _list_projects_at,
+    _trigger_auth,
     main,
 )
 from ccauth.config import SiteConfig
@@ -457,8 +458,40 @@ def test_vendordata_returns_empty_when_no_chameleon_key(monkeypatch):
 
 def test_cmd_login_success(monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC])
-    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: None)
+    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: True)
     assert main(["login"]) == 0
+
+
+def test_cmd_login_keystone_failure_still_succeeds(monkeypatch, caplog):
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC])
+    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: False)
+    with caplog.at_level("WARNING", logger="ccauth.cli"):
+        assert main(["login"]) == 0
+    assert "cached refresh token" in caplog.text
+    assert TACC.auth_url in caplog.text
+
+
+class _FakeSession:
+    """Stands in for keystoneauth1 Session; get_token() raises."""
+
+    def __init__(self, auth, cached):
+        self.auth = auth
+        self._cached = cached
+
+    def get_token(self):
+        self.auth.refresh_token_cached = self._cached
+        raise RuntimeError("keystone timed out")
+
+
+def test_trigger_auth_returns_false_when_token_cached_but_keystone_fails(monkeypatch):
+    monkeypatch.setattr("ccauth.cli.Session", lambda auth: _FakeSession(auth, cached=True))
+    assert _trigger_auth(TACC) is False
+
+
+def test_trigger_auth_raises_when_refresh_token_not_cached(monkeypatch):
+    monkeypatch.setattr("ccauth.cli.Session", lambda auth: _FakeSession(auth, cached=False))
+    with pytest.raises(RuntimeError):
+        _trigger_auth(TACC)
 
 
 def test_cmd_login_auth_failure(monkeypatch):

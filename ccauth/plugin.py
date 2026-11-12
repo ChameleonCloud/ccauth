@@ -35,6 +35,10 @@ def refresh_token_cache_path(issuer, client_id):
     digest = hashlib.sha256(key.encode()).hexdigest()[:16]
     return _STATE_DIR / f"refresh_token-{digest}.json"
 
+# Seconds to wait on the Keystone federated auth endpoint before giving up.
+# Keeps one unreachable site from hanging login indefinitely.
+KEYSTONE_TIMEOUT = 10
+
 
 class ChameleonDeviceAuth(OidcDeviceAuthorization):
     """OIDC device flow with refresh token caching.
@@ -53,6 +57,32 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
             **kwargs,
         )
         self._last_token_response = None
+        self.refresh_token_cached = False
+
+    def _cache_refresh_token(self, refresh_token):
+        """Persist the refresh token and remember that we did so."""
+        if refresh_token:
+            _save_refresh_token(self.refresh_token_cache, refresh_token)
+            self.refresh_token_cached = True
+
+    def _get_keystone_token(self, session, access_token):
+        """Exchange the OIDC access token for a Keystone token.
+
+        Same as the parent implementation, but bounded by KEYSTONE_TIMEOUT and
+        with a user-facing warning on failure. The refresh token from Keycloak
+        is cached before this is called, so a failure here does not lose it.
+        """
+        headers = {"Authorization": "Bearer " + access_token}
+        try:
+            return session.post(
+                self.federated_token_url,
+                headers=headers,
+                authenticated=False,
+                timeout=KEYSTONE_TIMEOUT,
+            )
+        except exceptions.ClientException as exc:
+            LOG.warning("Could not get a Keystone token from %s: %s", self.auth_url, exc)
+            raise
 
     @property
     def refresh_token_cache(self):
@@ -142,6 +172,9 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
 
         response = op_response.json()
         self._last_token_response = response
+        # Cache now, before the Keystone exchange, so a Keystone failure
+        # doesn't force the user through the device flow again.
+        self._cache_refresh_token(response.get("refresh_token"))
         return response[self.access_token_type]
 
     def get_unscoped_auth_ref(self, session):
@@ -160,9 +193,8 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                     "scope": self.scope,
                 }
                 access_token = self._get_access_token(session, payload)
-                _save_refresh_token(
-                    cache_path,
-                    self._last_token_response.get("refresh_token", cached),
+                self._cache_refresh_token(
+                    self._last_token_response.get("refresh_token", cached)
                 )
                 if from_legacy:
                     # The legacy token belonged to this IdP; it now lives in
@@ -180,13 +212,8 @@ class ChameleonDeviceAuth(OidcDeviceAuthorization):
                 resp = self._get_keystone_token(session, access_token)
                 return access.create(resp=resp)
 
-        auth_ref = super().get_unscoped_auth_ref(session)
-        if self._last_token_response:
-            _save_refresh_token(
-                cache_path,
-                self._last_token_response.get("refresh_token"),
-            )
-        return auth_ref
+        # Device flow; the refresh token is cached in _poll_device_flow.
+        return super().get_unscoped_auth_ref(session)
 
 
 def _cached_token_files():

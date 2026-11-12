@@ -238,7 +238,13 @@ def _cmd_discover_projects(args) -> int:
     return 0
 
 
-def _trigger_auth(site: SiteConfig) -> None:
+def _trigger_auth(site: SiteConfig) -> bool:
+    """Authenticate against a site, caching the Keycloak refresh token.
+
+    Returns True if a Keystone token was obtained. Returns False if the
+    refresh token was cached but the Keystone exchange failed (e.g. the site
+    timed out). Raises if the refresh token could not be obtained at all.
+    """
     plugin = ChameleonDeviceAuth(
         auth_url=site.auth_url,
         identity_provider=site.identity_provider,
@@ -249,7 +255,14 @@ def _trigger_auth(site: SiteConfig) -> None:
         project_id=site.project_id,
     )
     sess = Session(auth=plugin)
-    sess.get_token()
+    try:
+        sess.get_token()
+    except Exception:  # pylint: disable=broad-exception-caught
+        if not plugin.refresh_token_cached:
+            raise
+        logger.debug("Keystone token exchange failed:", exc_info=True)
+        return False
+    return True
 
 
 def _cmd_login(args) -> int:
@@ -258,7 +271,7 @@ def _cmd_login(args) -> int:
         return 1
     login_site = sites[0]
     try:
-        _trigger_auth(login_site)
+        keystone_ok = _trigger_auth(login_site)
     except KeyboardInterrupt:
         logger.error("\nAuthentication cancelled.")
         return 1
@@ -266,7 +279,15 @@ def _cmd_login(args) -> int:
         logger.error("Authentication failed: %s", e)
         logger.debug("Details:", exc_info=True)
         return 1
-    logger.info("Authenticated successfully. Refresh token cached.")
+    if keystone_ok:
+        logger.info("Authenticated successfully. Refresh token cached.")
+    else:
+        logger.warning(
+            "Logged in and cached refresh token, but %s could not be reached. "
+            "Commands targeting that site may fail until it is reachable; "
+            "use --auth-url to log in against a different site.",
+            login_site.auth_url,
+        )
     clouds_yaml = Path("~/.config/openstack/clouds.yaml").expanduser()
     if clouds_yaml.exists():
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
