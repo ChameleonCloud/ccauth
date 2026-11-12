@@ -159,18 +159,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
     logger.debug("Discovering project '%s' across all sites", project_name)
 
     for site in sites:
-        if site.project_id:
-            continue
-        match = next(
-            (p for p in _list_projects_at(site) if p["name"] == project_name),
-            None,
-        )
-        if match:
-            site.project_id = match["id"]
-            logger.debug("Found '%s' at %s: %s", project_name, site.region_name, match["id"])
-        else:
-            logger.debug("Project '%s' not found at %s", project_name, site.region_name)
-
+        site.project_name = project_name
 
 def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
     """Return {project_name: [SiteConfig, ...]} for every project at every site.
@@ -188,6 +177,7 @@ def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=project["id"],
+                project_name=project["name"],
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -210,6 +200,7 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=site.project_id,
+                project_name=site.project_name,
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -323,7 +314,7 @@ def _cmd_clouds_yaml(args) -> int:
     else:
         # default (single site): use --cloud-name (default: "chameleon") regardless of vendordata
         sites[0].cloud_name = args.cloud_name
-    missing = [s for s in sites if not s.project_id]
+    missing = [s for s in sites if not (s.project_id or s.project_name)]
     if missing:
         names = ", ".join(s.region_name or s.auth_url for s in missing)
         if has_cached_refresh_token():

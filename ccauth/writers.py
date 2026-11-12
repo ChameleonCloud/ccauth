@@ -9,12 +9,33 @@ from pathlib import Path
 
 import yaml
 
+from .config import SiteConfig
 from ._fileutils import backup_file, load_yaml, write_secure
 
 logger = logging.getLogger(__name__)
 
+def _build_site_auth(site: SiteConfig):
+    """
+    Builds auth object for a given site, preferring to specify project_name and project_domain_name
+    over project_id as project_ids are not reliably the same across sites.
+    """
+    auth = {
+        "auth_url": site.auth_url,
+        "identity_provider": site.identity_provider,
+        "protocol": site.protocol,
+        "client_id": site.client_id,
+        "discovery_endpoint": site.discovery_endpoint,
+    }
+    if site.project_name:
+        auth["project_name"] = site.project_name
+        auth["project_domain_name"] = site.project_domain_name
+    else:
+        auth["project_id"] = site.project_id
 
-def write_clouds_yaml(sites, output_path, force=False):
+    return auth
+
+
+def write_clouds_yaml(sites: list[SiteConfig], output_path, force=False):
     """Write or update a clouds.yaml with v3chameleonoidc entries.
 
     Returns True if the file was written.
@@ -35,18 +56,12 @@ def write_clouds_yaml(sites, output_path, force=False):
         data["clouds"] = {}
 
     for site in sites:
-        data["clouds"][site.cloud_name] = {
-            "auth_type": "v3chameleonoidc",
-            "auth": {
-                "auth_url": site.auth_url,
-                "identity_provider": site.identity_provider,
-                "protocol": site.protocol,
-                "project_id": site.project_id,
-                "client_id": site.client_id,
-                "discovery_endpoint": site.discovery_endpoint,
-            },
-            "region_name": site.region_name,
-        }
+        for site in sites:
+            data["clouds"][site.cloud_name] = {
+                "auth_type": "v3chameleonoidc",
+                "auth": _build_site_auth(site),
+                "region_name": site.region_name,
+            }
 
     write_secure(output_path, yaml.safe_dump(data, default_flow_style=False))
     return True
