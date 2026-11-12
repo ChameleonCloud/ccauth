@@ -327,6 +327,7 @@ def _cmd_clouds_yaml(args) -> int:
     else:
         # default (single site): use --cloud-name (default: "chameleon") regardless of vendordata
         sites[0].cloud_name = args.cloud_name
+        _enrich_project_ids(sites)
     missing = [s for s in sites if not s.project_id]
     if missing:
         names = ", ".join(s.region_name or s.auth_url for s in missing)
