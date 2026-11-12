@@ -136,7 +136,8 @@ def _list_projects_at(site: SiteConfig) -> list[dict]:
     )
     sess = Session(auth=plugin)
     try:
-        return list_projects_at(sess)
+        result = list_projects_at(sess)
+        return result
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("Could not list projects at %s: %s", site.auth_url, exc)
         return []
@@ -158,8 +159,16 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
     project_name = current_project["name"]
     logger.debug("Discovering project '%s' across all sites", project_name)
 
+    # The project's domain isn't named the same at every site, so look up its
+    # domain ID at each one.
     for site in sites:
-        site.project_name = project_name
+        projects = all_projects if site is current else _list_projects_at(site)
+        match = next((p for p in projects if p["name"] == project_name), None)
+        if match:
+            site.project_name = project_name
+            site.project_domain_id = match.get("domain_id", "")
+        else:
+            logger.debug("Project '%s' not found at %s", project_name, site.region_name)
 
 def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
     """Return {project_name: [SiteConfig, ...]} for every project at every site.
@@ -178,6 +187,7 @@ def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=project["id"],
                 project_name=project["name"],
+                project_domain_id=project.get("domain_id", ""),
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -201,6 +211,7 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=site.project_id,
                 project_name=site.project_name,
+                project_domain_id=site.project_domain_id,
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))

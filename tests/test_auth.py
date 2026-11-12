@@ -445,6 +445,18 @@ def test_write_clouds_yaml_custom_project_domain(tmp_path):
     assert _auth_entry(path)["project_domain_name"] == "other"
 
 
+def test_write_clouds_yaml_prefers_project_domain_id(tmp_path):
+    # A domain ID looked up at the site works even where the domain isn't
+    # named "chameleon" (CHI@NCAR).
+    path = tmp_path / "clouds.yaml"
+    write_clouds_yaml([replace(SITE, project_name="CHI-240042", project_domain_id="dom-1")], path)
+
+    auth = _auth_entry(path)
+    assert auth["project_domain_id"] == "dom-1"
+    assert "project_domain_name" not in auth
+    assert "project_id" not in auth
+
+
 def test_write_clouds_yaml_force_replaces_id_entry_with_name(tmp_path):
     path = tmp_path / "clouds.yaml"
     write_clouds_yaml([SITE], path)
@@ -459,3 +471,4 @@ def test_site_config_project_defaults():
     site = SiteConfig(auth_url="https://example.com:5000/v3", region_name="X", cloud_name="x")
     assert site.project_name == ""
     assert site.project_domain_name == "chameleon"
+    assert site.project_domain_id == ""

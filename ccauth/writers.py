@@ -28,7 +28,12 @@ def _build_site_auth(site: SiteConfig):
     }
     if site.project_name:
         auth["project_name"] = site.project_name
-        auth["project_domain_name"] = site.project_domain_name
+        # Domain names differ between sites (CHI@NCAR's isn't "chameleon"),
+        # so prefer the domain ID looked up at this site.
+        if site.project_domain_id:
+            auth["project_domain_id"] = site.project_domain_id
+        else:
+            auth["project_domain_name"] = site.project_domain_name
     else:
         auth["project_id"] = site.project_id
 

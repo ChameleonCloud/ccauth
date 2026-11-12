@@ -282,19 +282,25 @@ def test_enrich_skips_when_no_seeded_site():
     mock_list.assert_not_called()
 
 
-def test_enrich_applies_seed_project_name_to_every_site():
+def test_enrich_sets_name_and_domain_id_at_each_site():
     seeded = _site("https://a.com:5000/v3", "A", project_id="p1")
     other  = _site("https://b.com:5000/v3", "B")
-    mock_list = MagicMock(return_value=[{"id": "p1", "name": "CHI-240042"}])
 
+    def mock_list(site):
+        if site is seeded:
+            return [{"id": "p1", "name": "CHI-240042", "domain_id": "dom-a"}]
+        return [{"id": "p2", "name": "CHI-240042", "domain_id": "dom-b"}]
+
+    calls = []
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr("ccauth.cli._list_projects_at", mock_list)
+        mp.setattr("ccauth.cli._list_projects_at", lambda site: calls.append(site) or mock_list(site))
         _enrich_project_ids([seeded, other])
 
     assert seeded.project_name == other.project_name == "CHI-240042"
+    assert (seeded.project_domain_id, other.project_domain_id) == ("dom-a", "dom-b")
     assert other.project_id == ""
-    # Only the seed site is queried; other sites' IDs aren't needed.
-    mock_list.assert_called_once_with(seeded)
+    # One lookup per site; the seed site's list is reused, not fetched twice.
+    assert calls == [seeded, other]
 
 
 def test_enrich_sets_no_name_when_seed_id_not_found():
@@ -324,28 +330,30 @@ def test_enrich_does_not_overwrite_existing_project_id():
     assert other.project_name == "CHI-240042"
 
 
-def test_enrich_names_site_where_project_not_listed_yet():
-    # Keystone creates a federated project on a member's first login at a
-    # site, so a site that doesn't list it yet still gets the name.
+def test_enrich_leaves_site_without_project_when_not_listed():
+    # Without the site's own listing there's no domain ID to write, so the
+    # site gets neither a name nor a domain (and clouds-yaml reports it).
     seeded = _site("https://a.com:5000/v3", "A", project_id="p1")
     other  = _site("https://b.com:5000/v3", "B")
 
     def mock_list(site):
         if site is seeded:
-            return [{"id": "p1", "name": "CHI-240042"}]
+            return [{"id": "p1", "name": "CHI-240042", "domain_id": "dom-a"}]
         return []
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("ccauth.cli._list_projects_at", mock_list)
         _enrich_project_ids([seeded, other])
 
-    assert other.project_name == "CHI-240042"
+    assert other.project_name == ""
+    assert other.project_domain_id == ""
 
 
 
 def test_discover_projects_groups_by_name():
     def mock_list(site):
-        return [{"id": f"p-{site.cloud_name}", "name": "CHI-240042"}]
+        return [{"id": f"p-{site.cloud_name}", "name": "CHI-240042",
+                 "domain_id": f"dom-{site.cloud_name}"}]
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("ccauth.cli._list_projects_at", mock_list)
@@ -356,6 +364,8 @@ def test_discover_projects_groups_by_name():
     ids = {s.project_id for s in result["CHI-240042"]}
     assert ids == {"p-tacc", "p-uc"}
     assert all(s.project_name == "CHI-240042" for s in result["CHI-240042"])
+    domain_ids = {s.project_domain_id for s in result["CHI-240042"]}
+    assert domain_ids == {"dom-tacc", "dom-uc"}
 
 
 def test_discover_projects_multiple_projects_per_site():
@@ -385,7 +395,7 @@ def test_discover_projects_site_with_no_projects_is_excluded():
 def test_collect_all_projects_slugged_names():
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("ccauth.cli._list_projects_at", MagicMock(return_value=[
-            {"id": "p1", "name": "CHI-240042"}
+            {"id": "p1", "name": "CHI-240042", "domain_id": "dom-tacc"}
         ]))
         result = _collect_all_projects([TACC])
 
@@ -393,6 +403,7 @@ def test_collect_all_projects_slugged_names():
     assert result[0].cloud_name == "tacc_chi_240042"
     assert result[0].project_id == "p1"
     assert result[0].project_name == "CHI-240042"
+    assert result[0].project_domain_id == "dom-tacc"
 
 
 def test_collect_all_projects_one_entry_per_site_project_pair():
@@ -650,18 +661,21 @@ def test_cmd_clouds_yaml_accepts_project_name_without_id(tmp_path, monkeypatch):
 def test_cmd_clouds_yaml_all_sites_writes_project_name_everywhere(tmp_path, monkeypatch):
     sites = [replace(TACC, project_id="p1"), replace(UC)]
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: sites)
-    list_projects = MagicMock(return_value=[{"id": "p1", "name": "CHI-240042"}])
-    monkeypatch.setattr("ccauth.cli._list_projects_at", list_projects)
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [
+        {"id": "p1" if site is sites[0] else "p2", "name": "CHI-240042",
+         "domain_id": f"dom-{site.cloud_name}"}
+    ])
     output = tmp_path / "clouds.yaml"
 
     assert main(["clouds-yaml", "--output", str(output), "--all-sites"]) == 0
 
     clouds = yaml.safe_load(output.read_text())["clouds"]
     assert set(clouds) == {"tacc", "uc"}
-    for cloud in clouds.values():
+    for name, cloud in clouds.items():
         assert cloud["auth"]["project_name"] == "CHI-240042"
+        assert cloud["auth"]["project_domain_id"] == f"dom-{name}"
+        assert "project_domain_name" not in cloud["auth"]
         assert "project_id" not in cloud["auth"]
-    list_projects.assert_called_once()
 
 
 def test_cmd_clouds_yaml_all_sites_errors_when_name_unresolved(tmp_path, monkeypatch, caplog):
@@ -682,7 +696,7 @@ def test_cmd_clouds_yaml_all_sites_errors_when_name_unresolved(tmp_path, monkeyp
 def test_cmd_clouds_yaml_all_projects_writes_project_names(tmp_path, monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC, UC])
     monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [
-        {"id": f"p-{site.cloud_name}", "name": "CHI-240042"}
+        {"id": f"p-{site.cloud_name}", "name": "CHI-240042", "domain_id": f"dom-{site.cloud_name}"}
     ])
     output = tmp_path / "clouds.yaml"
 
@@ -690,8 +704,9 @@ def test_cmd_clouds_yaml_all_projects_writes_project_names(tmp_path, monkeypatch
 
     clouds = yaml.safe_load(output.read_text())["clouds"]
     assert set(clouds) == {"tacc_chi_240042", "uc_chi_240042"}
-    for cloud in clouds.values():
+    for name, cloud in clouds.items():
         assert cloud["auth"]["project_name"] == "CHI-240042"
+        assert cloud["auth"]["project_domain_id"] == f"dom-{name.split('_')[0]}"
         assert "project_id" not in cloud["auth"]
 
 
