@@ -1,18 +1,18 @@
 # ccauth
 
-OpenStack Chameleon device-flow authentication helper with application-credential caching.
+OpenStack Chameleon device-flow authentication helper.
 
-In most cases, we recommend the `ccauth`-based flow, as it is both more convenient and more secure. In some cases, such as noninteractive or ephemeral workflows, the application credential-based flow may be more suitable, so we provide both below.
+**`ccauth`** caches and refreshes credentials automatically, and allows you to authenticate from the CLI by opening a link in your browser. It works with all OpenStack CLI or API commands that understand a `clouds.yaml` file. Because this implements a keystoneauth1 plugin, `ccauth` must be installed in the same Python environment as the OpenStack clients using it.
 
-**`ccauth`** is the most convenient option for interactive use. It caches and refreshes credentials automatically, and allows you to authenticate from the CLI by opening a link in your browser. It works with all OpenStack CLI or API commands that understand a `clouds.yaml` file. Because this implements a keystoneauth1 plugin, `ccauth` must be installed in the same Python environment as the OpenStack clients using it.
-
-**`cc-login`** is an alternate method using OpenStack application credentials. This is useful to generate portable `openrc`/`clouds.yaml` credential files that will work even if `ccauth` is not installed. Note: because these credentials are used to create more credentials, they are unrestricted — if leaked, they could be used to create non-expiring credentials as your user.
+> **Note:** The application credential flow (`cc-login`) is not recommended, and support for it will be dropped soon. Use the `ccauth` commands below instead.
 
 ## Installation
 
 ```bash
-pip install ccauth
+pip install <pypi name>
 ```
+
+This installs the `ccauth` command and the `v3chameleonoidc` keystoneauth1 plugin.
 
 ---
 
@@ -155,74 +155,6 @@ Override the discovery endpoints with `--sites-api-url` and `--metadata-url`.
 
 ---
 
-## cc-login — application credential management
-
-### Quick start
-
-```bash
-# Authenticate and generate an openrc file
-cc-login --output-openrc ~/openrc
-
-# Authenticate and generate a clouds.yaml entry
-cc-login --output-clouds-yaml ~/.config/openstack/clouds.yaml
-
-# Force a new device flow + new credential (bypass cache)
-cc-login --output-openrc ~/openrc --force-refresh
-
-# Overwrite an existing file
-cc-login --output-openrc ~/openrc --force-openrc
-cc-login --output-clouds-yaml ~/clouds.yaml --force-clouds-yaml
-
-# Specify a site explicitly (skips auto-discovery)
-cc-login --auth-url https://chi.uc.chameleoncloud.org:5000/v3 --output-openrc ~/openrc
-```
-
-On first run (or with `--force-refresh`), `cc-login` starts an OIDC device flow. A short-lived application credential is created and cached at `~/.cache/ccauth/chameleon-app-cred.json`. Subsequent runs within the TTL reuse the cached credential.
-
-### Generated openrc format
-
-```bash
-export OS_AUTH_TYPE="v3applicationcredential"
-export OS_AUTH_URL="https://chi.uc.chameleoncloud.org:5000/v3"
-export OS_REGION_NAME="CHI@UC"
-export OS_APPLICATION_CREDENTIAL_ID="<id>"
-export OS_APPLICATION_CREDENTIAL_SECRET="<secret>"
-```
-
-### Generated clouds.yaml format
-
-```yaml
-clouds:
-  chameleon:
-    auth_type: v3applicationcredential
-    auth:
-      auth_url: https://chi.uc.chameleoncloud.org:5000/v3
-      application_credential_id: <id>
-      application_credential_secret: <secret>
-    region_name: CHI@UC
-```
-
-### Options
-
-| Flag | Default | Description |
-|---|---|---|
-| `--output-openrc FILE` | — | Write openrc file |
-| `--output-clouds-yaml FILE` | — | Write clouds.yaml entry |
-| `--force-refresh` | false | Bypass cache, re-authenticate |
-| `--force-openrc` | false | Overwrite existing openrc |
-| `--force-clouds-yaml` | false | Overwrite existing clouds.yaml entry |
-| `--auth-url URL` | auto-discovered | Keystone auth URL |
-| `--region-name NAME` | auto-discovered | OpenStack region |
-| `--project-id ID` | auto-discovered | OpenStack project |
-| `--cloud-name NAME` | `chameleon` | Cloud name in clouds.yaml |
-| `--app-cred-name PREFIX` | `chi-device-flow-auth` | App credential name prefix |
-| `--app-cred-expires-hours N` | `24` | Credential lifetime in hours |
-| `--app-cred-cache-path PATH` | `~/.cache/ccauth/chameleon-app-cred.json` | Cache file path |
-| `--ttl-seconds N` | `86400` | Local cache TTL |
-| `--debug` | false | Enable debug logging |
-
----
-
 ## Library usage
 
 ```python
@@ -231,14 +163,6 @@ from ccauth import AuthConfig, build_session
 
 config = AuthConfig(auth_url="https://chi.uc.chameleoncloud.org:5000/v3")
 session = build_session(config)  # prompts device flow on first call
-
-# App credential caching (cc-login workflow)
-from ccauth import AppCredConfig, ensure_app_cred
-from ccauth.appcred import write_openrc, write_clouds_yaml
-
-config = AppCredConfig(auth_url="https://chi.uc.chameleoncloud.org:5000/v3")
-app_cred = ensure_app_cred(config)
-write_openrc(app_cred, "~/openrc", auth_url=config.auth_url)
 
 # Site discovery
 from ccauth import from_reference_api, from_vendordata
