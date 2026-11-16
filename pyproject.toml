@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "chameleon-ccauth"
-version = "0.3.0"
+# version comes from the latest git tag via setuptools-scm
+dynamic = ["version"]
 description = "OIDC device flow auth plugin for OpenStack on Chameleon"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,3 +32,5 @@ cc-login = "ccauth.cli:main_cc_login"
 
 [project.entry-points."keystoneauth1.plugin"]
 v3chameleonoidc = "ccauth.loader:ChameleonDeviceAuthLoader"
+
+[tool.setuptools_scm]

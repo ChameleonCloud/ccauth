@@ -204,3 +204,9 @@ from ccauth import from_reference_api, from_vendordata
 sites = from_reference_api()   # all Chameleon sites
 sites = from_vendordata()      # current site (on a Chameleon instance)
 ```
+
+---
+
+## Releasing
+
+Releases are published to PyPI automatically when a GitHub release is created. See [docs/releasing.md](https://github.com/ChameleonCloud/ccauth/blob/main/docs/releasing.md) for the steps.
