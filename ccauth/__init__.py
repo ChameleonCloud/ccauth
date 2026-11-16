@@ -2,15 +2,14 @@
 
 Library usage:
 
-  Core OIDC auth (both workflows):
+  Core OIDC auth:
     from ccauth import AuthConfig, build_session
-
-  App credential caching (cc-login workflow):
-    from ccauth import AppCredConfig, ensure_app_cred
-    from ccauth.appcred import write_openrc, write_clouds_yaml
 
   OIDC plugin workflow (ccauth clouds-yaml / openrc):
     from ccauth import SiteConfig, from_reference_api, write_clouds_yaml
+
+The application credential flow (cc-login) is not recommended, and support
+for it will be dropped soon.
 """
 from importlib.metadata import PackageNotFoundError, version
 
@@ -22,7 +21,7 @@ from .plugin import ChameleonDeviceAuth, clear_cache
 from .writers import write_clouds_yaml, write_openrc_file
 
 try:
-    __version__ = version("ccauth")
+    __version__ = version("chameleon-ccauth")
 except PackageNotFoundError:  # pragma: no cover
     __version__ = "unknown"
 
