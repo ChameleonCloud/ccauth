@@ -35,7 +35,7 @@ from .discover import (
     from_vendordata,
     list_projects_at,
 )
-from .plugin import REFRESH_TOKEN_CACHE, ChameleonDeviceAuth, clear_cache
+from .plugin import ChameleonDeviceAuth, clear_cache, has_cached_refresh_token
 from .writers import write_clouds_yaml, write_openrc_file  # v3chameleonoidc (ccauth)
 
 logger = logging.getLogger(__name__)
@@ -143,7 +143,7 @@ def _list_projects_at(site: SiteConfig) -> list[dict]:
 
 
 def _enrich_project_ids(sites: list[SiteConfig]) -> None:
-    """Discover project_id at each site by matching the current site's project name."""
+    """Discover project_id and project_domain_id at each site by matching the current site's project name."""
     current = next((s for s in sites if s.project_id), None)
     if not current:
         logger.debug("No project ID seed; pass --project-id or run 'ccauth discover-projects'")
@@ -154,6 +154,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
     if not current_project:
         logger.debug("Could not resolve name for project %s", current.project_id)
         return
+    current.project_domain_id = current_project.get("domain_id", "")
 
     project_name = current_project["name"]
     logger.debug("Discovering project '%s' across all sites", project_name)
@@ -167,6 +168,7 @@ def _enrich_project_ids(sites: list[SiteConfig]) -> None:
         )
         if match:
             site.project_id = match["id"]
+            site.project_domain_id = match.get("domain_id", "")
             logger.debug("Found '%s' at %s: %s", project_name, site.region_name, match["id"])
         else:
             logger.debug("Project '%s' not found at %s", project_name, site.region_name)
@@ -188,6 +190,7 @@ def _discover_projects(sites: list[SiteConfig]) -> dict[str, list[SiteConfig]]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=project["id"],
+                project_domain_id=project.get("domain_id", ""),
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -210,6 +213,7 @@ def _collect_all_projects(sites: list[SiteConfig]) -> list[SiteConfig]:
                 client_id=site.client_id,
                 discovery_endpoint=site.discovery_endpoint,
                 project_id=site.project_id,
+                project_domain_id=site.project_domain_id,
                 identity_provider=site.identity_provider,
                 protocol=site.protocol,
             ))
@@ -238,7 +242,13 @@ def _cmd_discover_projects(args) -> int:
     return 0
 
 
-def _trigger_auth(site: SiteConfig) -> None:
+def _trigger_auth(site: SiteConfig) -> bool:
+    """Authenticate against a site, caching the Keycloak refresh token.
+
+    Returns True if a Keystone token was obtained. Returns False if the
+    refresh token was cached but the Keystone exchange failed (e.g. the site
+    timed out). Raises if the refresh token could not be obtained at all.
+    """
     plugin = ChameleonDeviceAuth(
         auth_url=site.auth_url,
         identity_provider=site.identity_provider,
@@ -249,7 +259,14 @@ def _trigger_auth(site: SiteConfig) -> None:
         project_id=site.project_id,
     )
     sess = Session(auth=plugin)
-    sess.get_token()
+    try:
+        sess.get_token()
+    except Exception:  # pylint: disable=broad-exception-caught
+        if not plugin.refresh_token_cached:
+            raise
+        logger.debug("Keystone token exchange failed:", exc_info=True)
+        return False
+    return True
 
 
 def _cmd_login(args) -> int:
@@ -258,7 +275,7 @@ def _cmd_login(args) -> int:
         return 1
     login_site = sites[0]
     try:
-        _trigger_auth(login_site)
+        keystone_ok = _trigger_auth(login_site)
     except KeyboardInterrupt:
         logger.error("\nAuthentication cancelled.")
         return 1
@@ -266,7 +283,15 @@ def _cmd_login(args) -> int:
         logger.error("Authentication failed: %s", e)
         logger.debug("Details:", exc_info=True)
         return 1
-    logger.info("Authenticated successfully. Refresh token cached.")
+    if keystone_ok:
+        logger.info("Authenticated successfully. Refresh token cached.")
+    else:
+        logger.warning(
+            "Logged in and cached refresh token, but %s could not be reached. "
+            "Commands targeting that site may fail until it is reachable; "
+            "use --auth-url to log in against a different site.",
+            login_site.auth_url,
+        )
     clouds_yaml = Path("~/.config/openstack/clouds.yaml").expanduser()
     if clouds_yaml.exists():
         logger.info("Set OS_CLOUD and run 'openstack <command>' to interact with Chameleon.")
@@ -281,7 +306,7 @@ def _cmd_login(args) -> int:
 
 def _cmd_logout(_args) -> int:
     if clear_cache():
-        logger.info("Cleared cached refresh token.")
+        logger.info("Cleared cached refresh token(s).")
     else:
         logger.info("No cached token found.")
     return 0
@@ -302,10 +327,11 @@ def _cmd_clouds_yaml(args) -> int:
     else:
         # default (single site): use --cloud-name (default: "chameleon") regardless of vendordata
         sites[0].cloud_name = args.cloud_name
+        _enrich_project_ids(sites)
     missing = [s for s in sites if not s.project_id]
     if missing:
         names = ", ".join(s.region_name or s.auth_url for s in missing)
-        if REFRESH_TOKEN_CACHE.expanduser().exists():
+        if has_cached_refresh_token():
             logger.error(
                 "No project ID for: %s. Pass --project-id, use --all-projects, "
                 "or run 'ccauth discover-projects'.",

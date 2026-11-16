@@ -15,6 +15,7 @@ from ccauth.cli import (
     _discover_projects,
     _enrich_project_ids,
     _list_projects_at,
+    _trigger_auth,
     main,
 )
 from ccauth.config import SiteConfig
@@ -457,8 +458,40 @@ def test_vendordata_returns_empty_when_no_chameleon_key(monkeypatch):
 
 def test_cmd_login_success(monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC])
-    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: None)
+    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: True)
     assert main(["login"]) == 0
+
+
+def test_cmd_login_keystone_failure_still_succeeds(monkeypatch, caplog):
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [TACC])
+    monkeypatch.setattr("ccauth.cli._trigger_auth", lambda site: False)
+    with caplog.at_level("WARNING", logger="ccauth.cli"):
+        assert main(["login"]) == 0
+    assert "cached refresh token" in caplog.text
+    assert TACC.auth_url in caplog.text
+
+
+class _FakeSession:
+    """Stands in for keystoneauth1 Session; get_token() raises."""
+
+    def __init__(self, auth, cached):
+        self.auth = auth
+        self._cached = cached
+
+    def get_token(self):
+        self.auth.refresh_token_cached = self._cached
+        raise RuntimeError("keystone timed out")
+
+
+def test_trigger_auth_returns_false_when_token_cached_but_keystone_fails(monkeypatch):
+    monkeypatch.setattr("ccauth.cli.Session", lambda auth: _FakeSession(auth, cached=True))
+    assert _trigger_auth(TACC) is False
+
+
+def test_trigger_auth_raises_when_refresh_token_not_cached(monkeypatch):
+    monkeypatch.setattr("ccauth.cli.Session", lambda auth: _FakeSession(auth, cached=False))
+    with pytest.raises(RuntimeError):
+        _trigger_auth(TACC)
 
 
 def test_cmd_login_auth_failure(monkeypatch):
@@ -490,17 +523,22 @@ def test_cmd_login_falls_back_to_first_site(monkeypatch):
 
 
 def test_cmd_logout_clears_token(tmp_path, monkeypatch):
-    cache = tmp_path / "token.json"
-    cache.write_text('{"refresh_token": "tok"}')
     import ccauth.plugin as plugin_mod
-    monkeypatch.setattr(plugin_mod, "REFRESH_TOKEN_CACHE", cache)
+    monkeypatch.setattr(plugin_mod, "_STATE_DIR", tmp_path)
+    caches = [
+        plugin_mod.refresh_token_cache_path("https://idp-a", "client"),
+        plugin_mod.refresh_token_cache_path("https://idp-b", "client"),
+        tmp_path / "refresh_token.json",  # legacy shared file
+    ]
+    for cache in caches:
+        cache.write_text('{"refresh_token": "tok"}')
     assert main(["logout"]) == 0
-    assert not cache.exists()
+    assert not any(cache.exists() for cache in caches)
 
 
 def test_cmd_logout_no_token_is_ok(tmp_path, monkeypatch):
     import ccauth.plugin as plugin_mod
-    monkeypatch.setattr(plugin_mod, "REFRESH_TOKEN_CACHE", tmp_path / "nonexistent.json")
+    monkeypatch.setattr(plugin_mod, "_STATE_DIR", tmp_path / "nonexistent")
     assert main(["logout"]) == 0
 
 
@@ -508,6 +546,7 @@ def test_cmd_logout_no_token_is_ok(tmp_path, monkeypatch):
 def test_cmd_clouds_yaml_default_single_site(tmp_path, monkeypatch):
     site = replace(TACC, project_id="proj-tacc")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
@@ -517,6 +556,7 @@ def test_cmd_clouds_yaml_default_single_site(tmp_path, monkeypatch):
 def test_cmd_clouds_yaml_default_kvm_site_gets_openstack_name(tmp_path, monkeypatch):
     site = replace(KVM, project_id="proj-kvm")
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: [])
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
     data = yaml.safe_load(output.read_text())
@@ -534,14 +574,30 @@ def test_cmd_clouds_yaml_all_sites_calls_enrich(tmp_path, monkeypatch):
     assert enriched  # enrich was called
 
 
-def test_cmd_clouds_yaml_default_does_not_call_enrich(tmp_path, monkeypatch):
+def test_cmd_clouds_yaml_all_sites_writes_project_domain_id(tmp_path, monkeypatch):
+    tacc = replace(TACC, project_id="proj-tacc")
+    uc = replace(UC)
+    projects = {
+        tacc.auth_url: [{"id": "proj-tacc", "name": "CHI-240042", "domain_id": "dom-tacc"}],
+        uc.auth_url: [{"id": "proj-uc", "name": "CHI-240042", "domain_id": "dom-uc"}],
+    }
+    monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [tacc, uc])
+    monkeypatch.setattr("ccauth.cli._list_projects_at", lambda site: projects[site.auth_url])
+    output = tmp_path / "clouds.yaml"
+    assert main(["clouds-yaml", "--output", str(output), "--all-sites"]) == 0
+    clouds = yaml.safe_load(output.read_text())["clouds"]
+    assert clouds["tacc"]["auth"]["project_domain_id"] == "dom-tacc"
+    assert clouds["uc"]["auth"]["project_domain_id"] == "dom-uc"
+
+
+def test_cmd_clouds_yaml_default_calls_enrich(tmp_path, monkeypatch):
     site = replace(TACC, project_id="proj-tacc")
     enriched = []
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [site])
     monkeypatch.setattr("ccauth.cli._enrich_project_ids", lambda s: enriched.append(s))
     output = tmp_path / "clouds.yaml"
     assert main(["clouds-yaml", "--output", str(output)]) == 0
-    assert not enriched  # enrich was NOT called for default single-site mode
+    assert enriched  # enrich was called for default single-site mode
 
 
 def test_cmd_clouds_yaml_all_projects_flag(tmp_path, monkeypatch):

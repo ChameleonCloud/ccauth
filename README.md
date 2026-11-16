@@ -46,7 +46,7 @@ ccauth --debug login
 
 #### `ccauth logout`
 
-Clears the cached refresh token.
+Clears all cached refresh tokens (for every identity provider).
 
 ```bash
 ccauth logout
@@ -151,7 +151,7 @@ Override the discovery endpoints with `--sites-api-url` and `--metadata-url`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CC_LOGIN_STATE` | `~/.cache/ccauth` | Directory for cached refresh token |
+| `CC_LOGIN_STATE` | `~/.cache/ccauth` | Directory for cached refresh tokens (one `refresh_token-<hash>.json` per identity provider + client ID) |
 
 ---
 
