@@ -21,7 +21,7 @@ from .plugin import ChameleonDeviceAuth, clear_cache
 from .writers import write_clouds_yaml, write_openrc_file
 
 try:
-    __version__ = version("ccauth")
+    __version__ = version("chameleon-ccauth")
 except PackageNotFoundError:  # pragma: no cover
     __version__ = "unknown"
 

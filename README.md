@@ -9,7 +9,7 @@ OpenStack Chameleon device-flow authentication helper.
 ## Installation
 
 ```bash
-pip install <pypi name>
+pip install chameleon-ccauth
 ```
 
 This installs the `ccauth` command and the `v3chameleonoidc` keystoneauth1 plugin.
