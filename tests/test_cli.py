@@ -17,6 +17,7 @@ from ccauth.cli import (
     _list_projects_at,
     _trigger_auth,
     main,
+    main_cc_login,
 )
 from ccauth.config import SiteConfig
 from ccauth._urlutils import auth_url_base as base_url
@@ -722,3 +723,18 @@ def test_cmd_discover_projects_no_projects_found(monkeypatch):
     monkeypatch.setattr("ccauth.cli._build_sites", lambda args: [KVM])
     monkeypatch.setattr("ccauth.cli._discover_projects", lambda _: {})
     assert main(["discover-projects"]) == 1
+
+
+def test_cc_login_stub_prints_removal_notice(capsys):
+    assert main_cc_login([]) == 1
+    err = capsys.readouterr().err
+    assert "has been removed" in err
+    assert "ccauth clouds-yaml" in err
+    assert "ccauth openrc" in err
+
+
+def test_cc_login_stub_ignores_old_flags(tmp_path, capsys):
+    output = tmp_path / "openrc"
+    assert main_cc_login(["--output-openrc", str(output), "--force-refresh"]) == 1
+    assert "has been removed" in capsys.readouterr().err
+    assert not output.exists()

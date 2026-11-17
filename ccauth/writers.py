@@ -1,8 +1,4 @@
-"""Write v3chameleonoidc clouds.yaml and openrc files from SiteConfig.
-
-Used by the ccauth OIDC plugin workflow. For application credential files
-(cc-login), see appcred.write_openrc and appcred.write_clouds_yaml.
-"""
+"""Write v3chameleonoidc clouds.yaml and openrc files from SiteConfig."""
 
 import logging
 from pathlib import Path
