@@ -18,12 +18,6 @@ from pathlib import Path
 from keystoneauth1.session import Session
 
 from . import __version__
-from .appcred import (
-    AppCredConfig,
-    ensure_app_cred,
-    write_clouds_yaml as _write_clouds_yaml_appcred,  # v3applicationcredential (cc-login)
-    write_openrc as _write_openrc_appcred,            # v3applicationcredential (cc-login)
-)
 from .config import SiteConfig
 from ._urlutils import auth_url_base
 from .discover import (
@@ -36,9 +30,19 @@ from .discover import (
     list_projects_at,
 )
 from .plugin import ChameleonDeviceAuth, clear_cache, has_cached_refresh_token
-from .writers import write_clouds_yaml, write_openrc_file  # v3chameleonoidc (ccauth)
+from .writers import write_clouds_yaml, write_openrc_file
 
 logger = logging.getLogger(__name__)
+
+_CC_LOGIN_REMOVED = """\
+cc-login has been removed: ccauth no longer creates application credentials.
+
+Use 'ccauth clouds-yaml' or 'ccauth openrc' instead. These write files that
+authenticate through ccauth's v3chameleonoidc plugin, so ccauth must be
+installed in the same Python environment as your OpenStack client.
+
+See https://github.com/ChameleonCloud/ccauth#readme to set them up.
+"""
 
 
 def _current_site(sites: list[SiteConfig], region_name: str, vd_sites: list[SiteConfig]):
@@ -383,82 +387,6 @@ def _cmd_openrc(args) -> int:
     return 0
 
 
-def _cmd_cc_login(args) -> int:
-    """cc-login: device flow → app credential → openrc/clouds.yaml."""
-    auth_url = args.auth_url
-    region_name = args.region_name or ""
-    project_id = args.project_id or ""
-
-    if not auth_url:
-        if getattr(args, "no_vendordata", False):
-            logger.error("--no-vendordata requires --auth-url.")
-            return 1
-        sites = from_vendordata(metadata_url=args.metadata_url)
-        if sites:
-            site = sites[0]
-            auth_url = site.auth_url
-            region_name = region_name or site.region_name
-            project_id = project_id or site.project_id
-        else:
-            logger.error(
-                "No site config found. Provide --auth-url or run on a Chameleon instance."
-            )
-            return 1
-
-    config = AppCredConfig(
-        auth_url=auth_url,
-        region_name=region_name,
-        project_id=project_id,
-        identity_provider=args.identity_provider,
-        protocol=args.protocol,
-        client_id=args.client_id,
-        discovery_endpoint=args.discovery_endpoint,
-        app_cred_name=args.app_cred_name,
-        app_cred_expires_in_hours=args.app_cred_expires_hours,
-        app_cred_cache_path=Path(args.app_cred_cache_path).expanduser(),
-        ttl_seconds=args.ttl_seconds,
-    )
-
-    try:
-        app_cred = ensure_app_cred(config, force_refresh=args.force_refresh)
-    except KeyboardInterrupt:
-        logger.error("\nAuthentication cancelled.")
-        return 1
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Authentication failed: %s", e)
-        logger.debug("Details:", exc_info=True)
-        return 1
-
-    cred_id = app_cred.get("id") or app_cred.get("application_credential_id")
-    logger.info("Application credential: %s", app_cred.get("name"))
-    logger.info("Credential ID: %s", cred_id)
-    if app_cred.get("expires_at"):
-        logger.info("Expires at: %s", app_cred["expires_at"])
-
-    if args.output_openrc:
-        if _write_openrc_appcred(
-            app_cred, args.output_openrc,
-            config.auth_url, config.region_name,
-            force=args.force_openrc,
-        ):
-            logger.info("Written openrc to %s", args.output_openrc)
-
-    if args.output_clouds_yaml:
-        if _write_clouds_yaml_appcred(
-            app_cred, args.output_clouds_yaml, args.cloud_name,
-            config.auth_url, config.region_name,
-            force=args.force_clouds_yaml,
-        ):
-            logger.info("Updated clouds.yaml at %s", args.output_clouds_yaml)
-
-    if not args.output_openrc and not args.output_clouds_yaml:
-        logger.info("No output files requested. To use these credentials:")
-        logger.info("  cc-login --output-openrc ~/openrc")
-        logger.info("  cc-login --output-clouds-yaml ~/clouds.yaml")
-
-    return 0
-
-
 def _add_site_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--auth-url",
@@ -513,46 +441,6 @@ def _add_site_args(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="Skip the OpenStack metadata service lookup. Requires --auth-url or --all-sites.",
     )
-
-
-def _setup_cc_login_parser(parser: argparse.ArgumentParser) -> None:
-    """Set up arguments for cc-login compatibility mode."""
-    parser.add_argument("--output-openrc", metavar="FILE", help="Write openrc file")
-    parser.add_argument(
-        "--output-clouds-yaml", metavar="FILE", help="Write clouds.yaml file"
-    )
-    parser.add_argument(
-        "--force-refresh", action="store_true", help="Bypass cache and re-authenticate"
-    )
-    parser.add_argument(
-        "--force-openrc", action="store_true", help="Overwrite existing openrc file"
-    )
-    parser.add_argument(
-        "--force-clouds-yaml",
-        action="store_true",
-        help="Overwrite existing clouds.yaml entry",
-    )
-    parser.add_argument(
-        "--app-cred-name", default="chi-device-flow-auth", help="App credential name prefix"
-    )
-    parser.add_argument(
-        "--app-cred-expires-hours",
-        type=int,
-        default=24,
-        help="App credential expiry in hours (default: 24)",
-    )
-    parser.add_argument(
-        "--app-cred-cache-path",
-        default="~/.cache/ccauth/chameleon-app-cred.json",
-        help="Path to app credential cache",
-    )
-    parser.add_argument(
-        "--ttl-seconds",
-        type=int,
-        default=86400,
-        help="Local cache TTL in seconds (default: 86400)",
-    )
-    _add_site_args(parser)
 
 
 def _setup_subcommand_parsers(parser: argparse.ArgumentParser) -> None:
@@ -630,22 +518,16 @@ def _setup_logging(debug: bool) -> None:
     )
 
 
-def main(argv=None, use_cc_login_compat=False) -> int:
+def main(argv=None) -> int:
     """Parse arguments and dispatch to the appropriate subcommand handler."""
     parser = argparse.ArgumentParser(
-        prog="ccauth" if not use_cc_login_compat else "cc-login",
+        prog="ccauth",
         description="Chameleon OIDC device flow authentication.",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-
-    if use_cc_login_compat:
-        _setup_cc_login_parser(parser)
-        args = parser.parse_args(argv)
-        _setup_logging(args.debug)
-        return _cmd_cc_login(args)
 
     _setup_subcommand_parsers(parser)
     args = parser.parse_args(argv)
@@ -665,6 +547,12 @@ def main(argv=None, use_cc_login_compat=False) -> int:
     return commands[args.command](args)
 
 
-def main_cc_login(argv=None) -> int:
-    """Entry point for cc-login command (compatibility wrapper)."""
-    return main(argv, use_cc_login_compat=True)
+def main_cc_login(argv=None) -> int:  # pylint: disable=unused-argument
+    """Entry point for the removed cc-login command.
+
+    Ignores all arguments so that old invocations print the removal notice
+    instead of an argparse error. Returns 1 so scripts that relied on cc-login
+    writing files fail instead of passing with nothing written.
+    """
+    sys.stderr.write(_CC_LOGIN_REMOVED)
+    return 1

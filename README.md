@@ -4,7 +4,7 @@ OpenStack Chameleon device-flow authentication helper.
 
 **`ccauth`** caches and refreshes credentials automatically, and allows you to authenticate from the CLI by opening a link in your browser. It works with all OpenStack CLI or API commands that understand a `clouds.yaml` file. Because this implements a keystoneauth1 plugin, `ccauth` must be installed in the same Python environment as the OpenStack clients using it.
 
-> **Note:** The application credential flow (`cc-login`) is not recommended, and support for it will be dropped soon. Use the `ccauth` commands below instead.
+> **`cc-login` has been removed.** ccauth no longer creates application credentials. Use `ccauth clouds-yaml` or `ccauth openrc` instead (see [Quick start](#quick-start)). These write files that authenticate through ccauth's `v3chameleonoidc` plugin, so ccauth must stay installed in the same Python environment as your OpenStack client.
 
 ## Installation
 

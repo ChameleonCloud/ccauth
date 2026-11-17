@@ -7,14 +7,10 @@ Library usage:
 
   OIDC plugin workflow (ccauth clouds-yaml / openrc):
     from ccauth import SiteConfig, from_reference_api, write_clouds_yaml
-
-The application credential flow (cc-login) is not recommended, and support
-for it will be dropped soon.
 """
 from importlib.metadata import PackageNotFoundError, version
 
 from .auth import AuthConfig, build_session
-from .appcred import AppCredConfig, ensure_app_cred
 from .config import SiteConfig
 from .discover import from_reference_api, from_vendordata, list_projects_at
 from .plugin import ChameleonDeviceAuth, clear_cache
@@ -28,8 +24,6 @@ except PackageNotFoundError:  # pragma: no cover
 __all__ = [
     "AuthConfig",
     "build_session",
-    "AppCredConfig",
-    "ensure_app_cred",
     "SiteConfig",
     "from_reference_api",
     "from_vendordata",

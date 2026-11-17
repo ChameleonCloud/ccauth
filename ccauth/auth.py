@@ -2,7 +2,7 @@
 
 Provides AuthConfig and build_session for constructing keystoneauth1 sessions
 via the OIDC device flow. Suitable for direct library use or as a foundation
-for higher-level workflows (app credentials, project discovery, etc.).
+for higher-level workflows (site and project discovery, etc.).
 
     from ccauth.auth import AuthConfig, build_session
     config = AuthConfig(auth_url="https://chi.uc.chameleoncloud.org:5000/v3")
